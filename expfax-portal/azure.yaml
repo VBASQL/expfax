@@ -1,0 +1,23 @@
+name: expfax-portal
+metadata:
+  template: expfax-portal
+services:
+  web:
+    project: .
+    language: js
+    host: appservice
+    dist: .next/standalone
+hooks:
+  preprovision:
+    shell: pwsh
+    run: Write-Host "Provisioning ExpFax infrastructure..."
+  postprovision:
+    shell: pwsh
+    run: |
+      Write-Host "Provisioned! Run infra/scripts/register-entra-app.ps1 to set up Entra ID."
+  prebuild:
+    shell: pwsh
+    run: npm ci
+  build:
+    shell: pwsh
+    run: npm run build

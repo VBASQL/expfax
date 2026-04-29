@@ -1,0 +1,3 @@
+{
+  "/api/fax/send/route": "app/api/fax/send/route.js"
+}

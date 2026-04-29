@@ -1,0 +1,3 @@
+{
+  "/api/sse/status/route": "app/api/sse/status/route.js"
+}

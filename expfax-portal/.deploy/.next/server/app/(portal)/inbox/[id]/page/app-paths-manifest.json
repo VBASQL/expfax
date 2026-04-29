@@ -1,0 +1,3 @@
+{
+  "/(portal)/inbox/[id]/page": "app/(portal)/inbox/[id]/page.js"
+}

@@ -1,0 +1,3 @@
+{
+  "/(portal)/sent/[id]/page": "app/(portal)/sent/[id]/page.js"
+}

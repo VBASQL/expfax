@@ -1,0 +1,122 @@
+import { DefaultAzureCredential } from "@azure/identity";
+import { SecretClient } from "@azure/keyvault-secrets";
+
+interface AppConfig {
+  // Cosmos DB
+  cosmosEndpoint: string;
+  cosmosDatabase: string;
+  cosmosKey?: string; // Only for local dev with emulator
+
+  // FaxBack
+  faxbackApiUrl: string;
+  faxbackUsername: string;
+  faxbackPassword: string;
+
+  // Entra ID (workforce — admin sign-in)
+  entraTenantId: string;
+  entraClientId: string;
+  entraClientSecret: string;
+
+  // External ID / CIAM (customer sign-in + Graph user provisioning)
+  externalTenantId: string;
+  externalTenantDomain: string;
+  externalClientId: string;
+  externalClientSecret: string;
+
+  // Session
+  sessionSecret: string;
+
+  // App
+  appUrl: string;
+  nodeEnv: string;
+
+  // Storage
+  faxStoragePath: string;
+  storageBlobEndpoint: string;
+}
+
+let cachedConfig: AppConfig | null = null;
+
+async function loadFromKeyVault(): Promise<Record<string, string>> {
+  const vaultUri = process.env.KEY_VAULT_URI;
+  if (!vaultUri) return {};
+
+  const tenantId = process.env.AZURE_TENANT_ID;
+  const credential = new DefaultAzureCredential(tenantId ? { tenantId } : undefined);
+  const client = new SecretClient(vaultUri, credential);
+  const secrets: Record<string, string> = {};
+
+  // Map Key Vault secret names to config keys
+  const secretNames = [
+    "faxback-api-url",
+    "faxback-username",
+    "faxback-password",
+    "entra-client-id",
+    "entra-client-secret",
+    "entra-tenant-id",
+    "external-tenant-id",
+    "external-tenant-domain",
+    "external-client-id",
+    "external-client-secret",
+    "session-secret",
+  ];
+
+  for (const name of secretNames) {
+    try {
+      const secret = await client.getSecret(name);
+      if (secret.value) {
+        secrets[name] = secret.value;
+      }
+    } catch {
+      console.warn(`Key Vault secret "${name}" not found`);
+    }
+  }
+
+  return secrets;
+}
+
+export async function getConfig(): Promise<AppConfig> {
+  if (cachedConfig) return cachedConfig;
+
+  const isProduction = process.env.NODE_ENV === "production";
+  const kvSecrets = isProduction ? await loadFromKeyVault() : {};
+
+  // Helper: Key Vault value (kebab-case name) → falls back to env var
+  const get = (kvName: string, envName: string, fallback = ""): string =>
+    kvSecrets[kvName] || process.env[envName] || fallback;
+
+  cachedConfig = {
+    cosmosEndpoint: process.env.COSMOS_ENDPOINT || "",
+    cosmosDatabase: process.env.COSMOS_DATABASE || "expfax",
+    cosmosKey: process.env.COSMOS_KEY, // Only set for local emulator
+
+    faxbackApiUrl: get("faxback-api-url", "FAXBACK_API_URL"),
+    faxbackUsername: get("faxback-username", "FAXBACK_SUPERVISOR_USERNAME"),
+    faxbackPassword: get("faxback-password", "FAXBACK_SUPERVISOR_PASSWORD"),
+
+    entraTenantId: get("entra-tenant-id", "ENTRA_TENANT_ID"),
+    entraClientId: get("entra-client-id", "ENTRA_CLIENT_ID"),
+    entraClientSecret: get("entra-client-secret", "ENTRA_CLIENT_SECRET"),
+
+    externalTenantId: get("external-tenant-id", "EXTERNAL_TENANT_ID"),
+    externalTenantDomain: get("external-tenant-domain", "EXTERNAL_TENANT_DOMAIN"),
+    externalClientId: get("external-client-id", "EXTERNAL_CLIENT_ID"),
+    externalClientSecret: get("external-client-secret", "EXTERNAL_CLIENT_SECRET"),
+
+    sessionSecret: get("session-secret", "SESSION_SECRET"),
+
+    appUrl: process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000",
+    nodeEnv: process.env.NODE_ENV || "development",
+
+    faxStoragePath: process.env.FAX_STORAGE_PATH || "./data/faxes",
+    storageBlobEndpoint: process.env.STORAGE_BLOB_ENDPOINT || "",
+  };
+
+  return cachedConfig;
+}
+
+// Synchronous access after initial load (for middleware etc.)
+export function getConfigSync(): AppConfig {
+  if (!cachedConfig) throw new Error("Config not loaded yet. Call getConfig() first.");
+  return cachedConfig;
+}
