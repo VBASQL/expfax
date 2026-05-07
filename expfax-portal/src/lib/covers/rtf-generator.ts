@@ -49,29 +49,64 @@ function coverLayout(fields: {
       ? imageRtf(fields.headerImageBase64, fields.headerImageType)
       : "";
 
-  return `{\\rtf1\\ansi\\deff0
-{\\fonttbl{\\f0\\froman\\fcharset0 Times New Roman;}{\\f1\\fswiss\\fcharset0 Arial;}}
-{\\colortbl;\\red0\\green0\\blue0;}
-\\paperw12240\\paperh15840\\margl1440\\margr1440\\margt1440\\margb1440
+  // Table row: right-aligned gray uppercase label | bold value. Skipped if value is empty.
+  // cellx2520 ≈ 1.75" label col; cellx9360 = full text width (8.5" − 2×1" margins)
+  function tRow(label: string, value: string, larger = false): string {
+    if (!value.trim()) return "";
+    const fs = larger ? "\\fs26" : "\\fs20";
+    return (
+      `\\trowd\\trgaph108\n` +
+      `\\clbrdrl\\brdrnone\\clbrdrt\\brdrnone\\clbrdrb\\brdrnone\\clbrdrr\\brdrnone\\cellx2520\n` +
+      `\\clbrdrl\\brdrnone\\clbrdrt\\brdrnone\\clbrdrb\\brdrnone\\clbrdrr\\brdrnone\\cellx9360\n` +
+      `\\pard\\intbl\\qr\\b0\\f1\\fs16\\cf2 ${label}\\cell\n` +
+      `\\pard\\intbl\\ql\\b\\f1${fs} ${value}\\b0\\cell\\row\n`
+    );
+  }
 
-${header}\\pard\\qc\\b\\f1\\fs28 FACSIMILE COVER PAGE\\b0\\f1\\fs20\\par
-\\pard\\ql\\par
-{\\b Date:} ${fields.date}\\par
-\\par
-{\\b To:} ${fields.to}\\par
-{\\b Company:} ${fields.toCompany}\\par
-\\par
-{\\b From:} ${fields.from}\\par
-{\\b Company:} ${fields.fromCompany}\\par
-{\\b Fax:} ${fields.fax}\\par
-{\\b Voice:} ${fields.voice}\\par
-\\par
-{\\b Subject:} ${fields.subject}\\par
-\\par
-\\pard\\ql\\brdrb\\brdrs\\brdrw10\\brsp20 \\par
-\\par
-${fields.body}\\par
-}`;
+  const thickRule = `\\pard\\brdrb\\brdrs\\brdrw30\\brdrsp40\\f1\\fs4  \\par\n`;
+  const thinRule  = `\\pard\\brdrb\\brdrs\\brdrw15\\brdrsp40\\f1\\fs4  \\par\n`;
+  const spacer    = `\\pard\\par\n`;
+
+  const toBlock =
+    tRow("TO", fields.to, true) +
+    tRow("COMPANY", fields.toCompany);
+
+  const fromBlock =
+    tRow("FROM", fields.from, true) +
+    tRow("COMPANY", fields.fromCompany) +
+    tRow("FAX", fields.fax) +
+    tRow("VOICE", fields.voice);
+
+  const subjectLine = fields.subject.trim()
+    ? `\\pard\\ql\\b\\f1\\fs20\\cf2 SUBJECT\\b0\\cf1\\f1\\fs20   ${fields.subject}\\par\n`
+    : "";
+
+  const bodyText = fields.body.trim()
+    ? `\\pard\\ql\\f0\\fs22 ${fields.body}\\par\n`
+    : "";
+
+  return (
+    `{\\rtf1\\ansi\\deff0\n` +
+    `{\\fonttbl{\\f0\\froman\\fcharset0 Times New Roman;}{\\f1\\fswiss\\fcharset0 Arial;}}\n` +
+    `{\\colortbl;\\red0\\green0\\blue0;\\red100\\green100\\blue100;}\n` +
+    `\\paperw12240\\paperh15840\\margl1440\\margr1440\\margt1440\\margb1440\n\n` +
+    header +
+    thickRule +
+    `\\pard\\qc\\b\\f1\\fs52 FAX TRANSMISSION\\b0\\par\n` +
+    thickRule +
+    spacer +
+    `\\pard\\qr\\f1\\fs18\\cf2 ${fields.date}\\cf1\\par\n` +
+    spacer +
+    toBlock +
+    (toBlock && fromBlock ? spacer : "") +
+    fromBlock +
+    spacer +
+    thinRule +
+    subjectLine +
+    spacer +
+    bodyText +
+    `}`
+  );
 }
 
 /**

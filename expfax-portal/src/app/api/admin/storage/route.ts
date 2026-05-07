@@ -6,7 +6,7 @@ import { DefaultAzureCredential } from "@azure/identity";
 export async function GET() {
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  if (user.role !== "admin") return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  if (!user.isAdmin) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
   const endpoint = process.env.STORAGE_BLOB_ENDPOINT;
   if (!endpoint) {

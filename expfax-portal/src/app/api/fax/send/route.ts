@@ -1,12 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
+import { v4 as uuid } from "uuid";
 import { getCurrentUser } from "@/lib/auth/session";
 import { sendMessage } from "@/lib/faxback/messages";
-import { generateOneTimeCoverRtf } from "@/lib/covers/rtf-generator";
-import { prepareFaxDocument } from "@/lib/documents/converter";
+import { generateCoverHtml } from "@/lib/covers/html-generator";
+import { prepareFaxDocument, countDocumentPages } from "@/lib/documents/converter";
 import { uploadSentDocuments } from "@/lib/services/blob-storage";
 import { containers } from "@/lib/db/cosmos";
-import { v4 as uuid } from "uuid";
 import type { FaxMessage, FaxRecipient, FaxDocument } from "@/types";
+
+/** Cosmos IDs cannot contain /, \, #, or ?  — sanitize the FaxBack handle.
+ *  Also lowercase: FaxBack returns the handle in different cases between
+ *  Messages/SendMessage and Messages/ReadQueue, and Cosmos id/queries are
+ *  case-sensitive — without normalization the queue poller fails to find the
+ *  optimistic row and inserts a duplicate. */
+function handleToId(handle: string): string {
+  return handle.replace(/[\/\\#?]/g, "_").toLowerCase();
+}
 
 export async function POST(request: NextRequest) {
   const user = await getCurrentUser();
@@ -19,21 +28,38 @@ export async function POST(request: NextRequest) {
   const {
     recipients,
     subject,
-    useCover,
-    coverTemplate,
-    coverMessage,
-    templateFields,
     oneTimeCover,
+    coverTemplateId,
     documents,
     resolution,
     scheduleTime,
     billingCode,
+    fromAccountGuid, // Optional: which FaxBack account to send from
   } = body;
+
+  // Resolve which account to send from
+  let sendAccountGuid: string = user.defaultFaxbackAccountGuid ?? user.faxbackAccountGuid;
+  let sendAccountId: string | null = user.faxbackAccountId ?? null;
+
+  if (fromAccountGuid) {
+    // Validate it's in the user's linked accounts
+    const accounts = user.faxbackAccounts ?? [];
+    const match = accounts.find((a) => a.accountGuid === fromAccountGuid);
+    if (!match) {
+      // Fall back to primary if no multi-account list exists yet (legacy users)
+      if (fromAccountGuid !== user.faxbackAccountGuid) {
+        return NextResponse.json({ error: "Selected account is not linked to your profile." }, { status: 403 });
+      }
+    } else {
+      sendAccountGuid = match.accountGuid;
+      sendAccountId = match.accountId;
+    }
+  }
 
   if (!recipients || !Array.isArray(recipients) || recipients.filter((r: { faxNumber?: string }) => r.faxNumber?.trim()).length === 0) {
     return NextResponse.json({ success: false, error: "At least one recipient fax number is required" }, { status: 400 });
   }
-  const hasCover = !!oneTimeCover || (useCover && coverTemplate);
+  const hasCover = !!oneTimeCover;
   if ((!documents || documents.length === 0) && !hasCover) {
     return NextResponse.json({ success: false, error: "At least one document or cover page is required" }, { status: 400 });
   }
@@ -44,19 +70,22 @@ export async function POST(request: NextRequest) {
   let rawDocuments = documents as Array<{ name: string; contentBase64: string }>;
 
   if (oneTimeCover) {
-    const rtf = generateOneTimeCoverRtf({
-      senderName:    String(oneTimeCover.senderName    || ""),
-      senderCompany: String(oneTimeCover.senderCompany || ""),
-      senderFax:     String(oneTimeCover.senderFax     || ""),
-      senderVoice:   String(oneTimeCover.senderVoice   || ""),
-      receiverName:  String(oneTimeCover.receiverName  || ""),
+    // Generate cover as HTML — same bytes shown in the preview iframe and sent to FaxBack.
+    // Note: base64 PNG letterhead images are not supported by FaxBack's HTML renderer,
+    // so the coverTemplateId letterhead is intentionally omitted here.
+    const html = generateCoverHtml({
+      senderName:      String(oneTimeCover.senderName      || ""),
+      senderCompany:   String(oneTimeCover.senderCompany   || ""),
+      senderFax:       String(oneTimeCover.senderFax       || ""),
+      senderVoice:     String(oneTimeCover.senderVoice     || ""),
+      receiverName:    String(oneTimeCover.receiverName    || ""),
       receiverCompany: String(oneTimeCover.receiverCompany || ""),
-      subject:       String(oneTimeCover.subject       || subject || ""),
-      message:       String(oneTimeCover.message       || ""),
+      subject:         String(oneTimeCover.subject         || subject || ""),
+      message:         String(oneTimeCover.message         || ""),
     });
-    const coverBase64 = Buffer.from(rtf).toString("base64");
+    const coverBase64 = Buffer.from(html).toString("base64");
     rawDocuments = [
-      { name: "Cover Page.rtf", contentBase64: coverBase64 },
+      { name: "Cover Page.html", contentBase64: coverBase64 },
       ...rawDocuments,
     ];
   }
@@ -66,22 +95,34 @@ export async function POST(request: NextRequest) {
     rawDocuments.map((d) => prepareFaxDocument(d.name, d.contentBase64))
   );
 
+  // Count pages from the original buffers before sending.
+  // - One-time cover RTF we generated is treated as 1 page (RTF has no reliable page count without rendering)
+  // - PDFs: parsed with pdf-lib; TIFFs: sharp metadata; images: always 1
+  const rawDocumentPageCounts = await Promise.all(
+    rawDocuments.map(async (d, i) => {
+      if (oneTimeCover && i === 0) return 1; // generated cover RTF
+      const buf = Buffer.from(d.contentBase64, "base64");
+      return countDocumentPages(d.name, buf);
+    })
+  );
+
   try {
-    const handle = await sendMessage({
-      accountGuid: user.faxbackAccountGuid,
+    const rawHandle = await sendMessage({
+      accountGuid: sendAccountGuid,
       subject,
-      senderName: templateFields?.senderName || user.displayName,
-      senderCompany: templateFields?.senderCompany || "",
-      senderFaxNumber: templateFields?.senderFax || undefined,
-      senderVoiceNumber: templateFields?.senderVoice || undefined,
-      coverTemplate: useCover ? coverTemplate : undefined,
-      coverMessage: useCover ? coverMessage : undefined,
+      senderName: user.displayName,
+      senderCompany: "",
       billingCode,
       resolution: resolution ?? 0,
       scheduleTime,
       recipients: validRecipients.map((r: { name?: string; faxNumber: string }) => ({ name: r.name || "", faxNumber: r.faxNumber })),
       documents: finalDocuments,
     });
+
+    // Normalize the handle case so the queue poller's case-sensitive
+    // `WHERE c.messageHandle = @handle` lookup will find this optimistic row
+    // and patch it instead of inserting a duplicate.
+    const handle = rawHandle.toLowerCase();
 
     // ── Persist to Blob Storage + Cosmos ──────────────────────────────────
     const messageId = uuid();
@@ -106,10 +147,10 @@ export async function POST(request: NextRequest) {
       statusNum: 0,
       queue: 2,
       subject: subject || "",
-      senderName: templateFields?.senderName || user.displayName,
-      senderCompany: templateFields?.senderCompany || "",
-      senderFaxNumber: templateFields?.senderFax || "",
-      coverTemplate: (useCover ? coverTemplate : "") || "",
+      senderName: user.displayName,
+      senderCompany: "",
+      senderFaxNumber: "",
+      coverTemplate: "",
       appInfo: "",
       billingCode: billingCode || "",
       resolution: resolution ?? 0,
@@ -119,6 +160,8 @@ export async function POST(request: NextRequest) {
       isDeleted: false,
       faxImagePath: "",          // filled in by queue poller after transmission
       sentDocumentPaths,
+      sentFromAccountGuid: sendAccountGuid,
+      sentFromAccountId: sendAccountId,
       recipients: validRecipients.map((r: { name?: string; faxNumber: string }) => ({
         recipientGuid: "",
         name: r.name || "",
@@ -141,10 +184,10 @@ export async function POST(request: NextRequest) {
       })),
       documents: finalDocuments.map((d, i) => ({
         documentGuid: "",
-        documentPart: i === 0 && (oneTimeCover || (useCover && coverTemplate)) ? 0 : 1,
+        documentPart: i === 0 && oneTimeCover ? 0 : 1,
         name: d.name,
         documentType: d.documentType,
-        pageCount: 0,
+        pageCount: rawDocumentPageCounts[i] ?? 0,
       } as FaxDocument)),
       createdAt: now,
       updatedAt: now,

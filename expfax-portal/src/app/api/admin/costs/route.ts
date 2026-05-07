@@ -6,7 +6,7 @@ import { DefaultAzureCredential } from "@azure/identity";
 export async function GET(request: NextRequest) {
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  if (user.role !== "admin") return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  if (!user.isAdmin) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
   const { searchParams } = new URL(request.url);
   const days = parseInt(searchParams.get("days") ?? "30", 10);

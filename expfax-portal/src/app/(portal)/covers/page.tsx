@@ -216,7 +216,7 @@ export default function CoverPagesPage() {
           <DialogHeader>
             <DialogTitle>{editingId ? "Edit Template" : "New Cover Page Template"}</DialogTitle>
             <DialogDescription>
-              Fill in the fields below. Use placeholder codes in the body â€” they are substituted with real values when you send a fax.
+              Fill in the fields below. Use placeholder codes in the body — they are substituted with real values when you send a fax.
             </DialogDescription>
           </DialogHeader>
 
@@ -319,7 +319,7 @@ export default function CoverPagesPage() {
           <DialogFooter>
             <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
             <Button onClick={handleSave} disabled={saving || !form.name.trim()}>
-              {saving ? "Savingâ€¦" : editingId ? "Save Changes" : "Create Template"}
+              {saving ? "Saving…" : editingId ? "Save Changes" : "Create Template"}
             </Button>
           </DialogFooter>
         </DialogContent>

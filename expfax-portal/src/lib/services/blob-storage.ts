@@ -48,6 +48,7 @@ export async function uploadFaxPdf(
   const blobPath = `${userId}/${year}/${month}/${messageId}.pdf`;
 
   const containerClient = await getContainerClient(container);
+  await containerClient.createIfNotExists();
   const blobClient = containerClient.getBlockBlobClient(blobPath);
 
   await blobClient.upload(pdfBuffer, pdfBuffer.length, {
@@ -98,6 +99,7 @@ export async function uploadSentDocuments(
   const year = now.getFullYear();
   const month = String(now.getMonth() + 1).padStart(2, "0");
   const containerClient = await getContainerClient("sent-documents");
+  await containerClient.createIfNotExists();
   const paths: string[] = [];
 
   for (let i = 0; i < documents.length; i++) {
@@ -206,12 +208,8 @@ export async function getFaxViewUrl(fullPath: string): Promise<string> {
   const containerClient = await getContainerClient(containerName);
   const blobClient = containerClient.getBlockBlobClient(blobPath);
 
-  // For managed identity, we use user delegation SAS
-  const client = await getClient();
   const now = new Date();
   const expiresOn = new Date(now.getTime() + 15 * 60 * 1000);
-
-  await client.getUserDelegationKey(now, expiresOn);
 
   const sas = await blobClient.generateSasUrl({
     permissions: { read: true } as any,

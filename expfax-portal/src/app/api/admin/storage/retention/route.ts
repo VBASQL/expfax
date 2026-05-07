@@ -15,7 +15,7 @@ const DOC_ID = "retention-config";
 export async function GET() {
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  if (user.role !== "admin") return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  if (!user.isAdmin) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
   const container = await containers.users();
   const { resource } = await container.item(DOC_ID, DOC_ID).read<RetentionConfig>();
@@ -36,7 +36,7 @@ export async function GET() {
 export async function PUT(request: Request) {
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  if (user.role !== "admin") return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  if (!user.isAdmin) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
   const body = await request.json();
   const container = await containers.users();

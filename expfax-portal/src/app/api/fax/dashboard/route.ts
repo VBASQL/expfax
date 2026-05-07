@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth/session";
 import { containers } from "@/lib/db/cosmos";
-import { getQueueCounts } from "@/lib/faxback/queues";
 
 export async function GET() {
   const user = await getCurrentUser();
@@ -46,19 +45,10 @@ export async function GET() {
     })
     .fetchAll();
 
-  // FaxBack queue counts (from live server)
-  let queueCounts = null;
-  try {
-    queueCounts = await getQueueCounts();
-  } catch (err) {
-    console.error("Failed to get queue counts:", err);
-  }
-
   return NextResponse.json({
     unreadCount: unreadResult[0] || 0,
     sendingCount: sendingResult[0] || 0,
     sentToday: sentTodayResult[0] || 0,
     recentActivity,
-    queueCounts,
   });
 }

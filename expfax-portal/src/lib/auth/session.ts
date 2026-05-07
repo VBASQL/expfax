@@ -25,7 +25,8 @@ function generateSessionToken(): string {
 export async function createSession(
   userId: string,
   ipAddress: string,
-  userAgent: string
+  userAgent: string,
+  isAdmin = false
 ): Promise<string> {
   const token = generateSessionToken();
   const now = new Date();
@@ -37,6 +38,7 @@ export async function createSession(
     createdAt: now.toISOString(),
     ipAddress,
     userAgent,
+    isAdmin,
   };
 
   const container = await containers.sessions();
@@ -53,13 +55,14 @@ export interface SessionValidationResult {
   valid: boolean;
   session?: Session;
   user?: User;
+  isAdmin: boolean;
 }
 
 export async function validateSession(): Promise<SessionValidationResult> {
   const cookieStore = await cookies();
   const token = cookieStore.get(SESSION_COOKIE_NAME)?.value;
 
-  if (!token) return { valid: false };
+if (!token) return { valid: false, isAdmin: false };
 
   try {
     const sessionsContainer = await containers.sessions();
@@ -71,14 +74,14 @@ export async function validateSession(): Promise<SessionValidationResult> {
       })
       .fetchAll();
 
-    if (resources.length === 0) return { valid: false };
+    if (resources.length === 0) return { valid: false, isAdmin: false };
 
     const session = resources[0] as Session;
 
     // Check expiry
     if (new Date(session.expiresAt) < new Date()) {
       await destroySession(token, session.userId);
-      return { valid: false };
+      return { valid: false, isAdmin: false };
     }
 
     // Fetch user
@@ -87,7 +90,7 @@ export async function validateSession(): Promise<SessionValidationResult> {
 
     if (!user || !user.isActive) {
       await destroySession(token, session.userId);
-      return { valid: false };
+      return { valid: false, isAdmin: false };
     }
 
     // Extend session on activity (sliding window for idle timeout)
@@ -100,10 +103,11 @@ export async function validateSession(): Promise<SessionValidationResult> {
       expiresAt: effectiveExpiry.toISOString(),
     });
 
-    return { valid: true, session, user };
+    const isAdmin = session.isAdmin ?? false;
+    return { valid: true, session, user, isAdmin };
   } catch (error) {
     console.error("Session validation error:", error);
-    return { valid: false };
+    return { valid: false, isAdmin: false };
   }
 }
 
@@ -126,7 +130,8 @@ export async function destroySession(token?: string, userId?: string): Promise<v
   }
 }
 
-export async function getCurrentUser(): Promise<User | null> {
+export async function getCurrentUser(): Promise<(User & { isAdmin: boolean }) | null> {
   const result = await validateSession();
-  return result.user || null;
+  if (!result.user) return null;
+  return { ...result.user, isAdmin: result.isAdmin };
 }

@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { Logo } from "@/components/layout/logo";
 
 function LoginForm() {
   const router = useRouter();
@@ -78,8 +79,8 @@ function LoginForm() {
   return (
     <Card className="w-full max-w-md shadow-lg border-slate-200">
       <CardHeader className="text-center pb-2">
-        <div className="mx-auto mb-4 w-12 h-12 rounded-xl bg-gradient-to-br from-blue-600 to-blue-400 flex items-center justify-center text-white font-bold text-lg">
-          EF
+        <div className="flex justify-center mb-4">
+          <Logo height={48} />
         </div>
         <h1 className="text-2xl font-bold tracking-tight text-slate-900">ExpFax Portal</h1>
         <p className="text-sm text-slate-500">Sign in to manage your faxes</p>

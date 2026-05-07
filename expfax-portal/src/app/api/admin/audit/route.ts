@@ -4,7 +4,7 @@ import { containers } from "@/lib/db/cosmos";
 
 export async function GET(request: NextRequest) {
   const user = await getCurrentUser();
-  if (!user || user.role !== "admin") {
+  if (!user || !user.isAdmin) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
   }
 

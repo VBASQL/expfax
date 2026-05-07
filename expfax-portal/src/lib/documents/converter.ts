@@ -10,6 +10,7 @@
 
 import sharp from "sharp";
 import path from "path";
+import { PDFDocument } from "pdf-lib";
 
 // ─── FaxBack DocumentType numeric values ────────────────────────────────────
 // 0 = auto-detect (FaxBack guesses from content)
@@ -104,6 +105,33 @@ export async function prepareFaxDocument(
                 : DOC_TYPE_AUTO;
 
   return { name, contentBase64, documentType: docType };
+}
+
+/**
+ * Count the pages in a document buffer.
+ * - PDF: parsed with pdf-lib (accurate for all PDF versions)
+ * - TIFF/DCX: sharp metadata `.pages` (multi-page TIFFs)
+ * - Raster images (PNG, JPEG, etc.): always 1 page
+ * - Other formats (RTF, DOCX, TXT, HTML): returns 0 (unknown without rendering)
+ */
+export async function countDocumentPages(name: string, buf: Buffer): Promise<number> {
+  const ext = path.extname(name).toLowerCase();
+  try {
+    if (ext === ".pdf") {
+      const pdf = await PDFDocument.load(buf, { ignoreEncryption: true });
+      return pdf.getPageCount();
+    }
+    if (ext === ".tif" || ext === ".tiff" || ext === ".dcx") {
+      const meta = await sharp(buf, { pages: -1 }).metadata();
+      return meta.pages ?? 1;
+    }
+    if (IMAGE_EXTENSIONS.has(ext)) {
+      return 1;
+    }
+  } catch {
+    // Parsing failed — return 0 so the poller can fill it in later
+  }
+  return 0;
 }
 
 /**

@@ -55,4 +55,5 @@ export const containers = {
   coverTemplates: () => getContainer("coverTemplates"),
   invitations: () => getContainer("invitations"),
   faxDrafts: () => getContainer("faxDrafts"),
+  trafficSnapshots: () => getContainer("trafficSnapshots"),
 };

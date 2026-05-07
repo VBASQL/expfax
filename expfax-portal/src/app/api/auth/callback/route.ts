@@ -1,10 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getEntraClient, getExternalEntraClient, findUserByEntraId } from "@/lib/auth/entra";
+import { getEntraClient, getExternalEntraClient, findUserByEntraId, hasArmRoleOnAppResources } from "@/lib/auth/entra";
 import { createSession, SESSION_COOKIE_NAME, SESSION_COOKIE_OPTIONS } from "@/lib/auth/session";
 import { getConfig } from "@/lib/config";
 import { getInvitation } from "@/lib/auth/invitations";
 import { createUserFromSignup } from "@/lib/auth/users";
 import { audit } from "@/lib/audit/logger";
+import { containers } from "@/lib/db/cosmos";
+import { v4 as uuid } from "uuid";
+import type { User } from "@/types";
 
 export async function GET(request: NextRequest) {
   const config = await getConfig();
@@ -86,17 +89,52 @@ export async function GET(request: NextRequest) {
     }
 
     // Normal login branch.
-    const user = await findUserByEntraId(entraId);
+    // Workforce tenant users are admin ONLY if they have an Azure RBAC role
+    // assignment on the Cosmos DB or Storage account — verified via ARM API.
+    // This is checked against actual resource permissions, not DB state, so
+    // access can never be accidentally granted or permanently revoked in DB.
+    const isWorkforceTenant = payload.tid === config.entraTenantId;
+    const isPrivilegedWorkforceUser = isWorkforceTenant
+      ? await hasArmRoleOnAppResources(entraId)
+      : false;
+
+    let user = await findUserByEntraId(entraId);
+
+    if (!user && isPrivilegedWorkforceUser) {
+      // First time this privileged workforce user logs in — provision as admin.
+      const now = new Date().toISOString();
+      const newUser: User = {
+        id: uuid(),
+        entraId,
+        email: claimedEmail,
+        displayName: claimedName,
+        role: "user",
+        isWorkforceAdmin: true,
+        authType: "microsoft",
+        isActive: true,
+        faxbackAccountGuid: null,
+        faxbackAccountId: null,
+        faxNumber: null,
+        linkedBy: null,
+        signupCompletedAt: now,
+        createdAt: now,
+        updatedAt: now,
+      };
+      const usersContainer = await containers.users();
+      const { resource } = await usersContainer.items.create(newUser);
+      user = resource as User;
+    }
 
     if (!user) {
+      // Workforce user without resource permissions, or unknown external user
       return NextResponse.redirect(`${config.appUrl}/login?error=not_linked`);
     }
 
     const ip = request.headers.get("x-forwarded-for") || "unknown";
     const ua = request.headers.get("user-agent") || "unknown";
-    const token = await createSession(user.id, ip, ua);
+    const token = await createSession(user.id, ip, ua, isPrivilegedWorkforceUser);
 
-    const landing = user.role === "admin" ? "/admin/users" : "/";
+    const landing = isPrivilegedWorkforceUser ? "/admin/users" : "/";
     const res = NextResponse.redirect(`${config.appUrl}${landing}`);
     res.cookies.set(SESSION_COOKIE_NAME, token, SESSION_COOKIE_OPTIONS);
     return res;

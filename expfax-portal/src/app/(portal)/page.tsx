@@ -39,13 +39,13 @@ export default function DashboardPage() {
 
   useEffect(() => {
     fetch("/api/fax/dashboard")
-      .then((r) => r.json())
-      .then(setData)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (d) setData(d); })
       .finally(() => setLoading(false));
 
     // Refresh every 30 seconds
     const interval = setInterval(() => {
-      fetch("/api/fax/dashboard").then((r) => r.json()).then(setData);
+      fetch("/api/fax/dashboard").then((r) => (r.ok ? r.json() : null)).then((d) => { if (d) setData(d); });
     }, 30_000);
     return () => clearInterval(interval);
   }, []);
@@ -64,7 +64,7 @@ export default function DashboardPage() {
     { label: "Unread Faxes", value: data.unreadCount, icon: Inbox, color: "blue" },
     { label: "Sending Now", value: data.sendingCount, icon: Activity, color: "yellow" },
     { label: "Sent Today", value: data.sentToday, icon: Send, color: "green" },
-    { label: "Queue Total", value: data.queueCounts ? data.queueCounts.Received + data.queueCounts.Send + data.queueCounts.Sending : 0, icon: Clock, color: "purple" },
+    { label: "In Progress", value: data.sendingCount + data.unreadCount, icon: Clock, color: "purple" },
   ];
 
   const colorMap: Record<string, string> = {

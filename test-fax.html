@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Fax Render Test</title>
+  <style>
+    /* ── Page setup ── */
+    @page { size: letter; margin: 1in; }
+    body {
+      font-family: Arial, sans-serif;
+      font-size: 12pt;
+      color: #000;
+      max-width: 6.5in;
+      margin: 0 auto;
+    }
+
+    /* ── Header bar ── */
+    .header {
+      background-color: #003399;
+      color: white;
+      padding: 12px 16px;
+      font-size: 18pt;
+      font-weight: bold;
+      letter-spacing: 1px;
+    }
+
+    /* ── Section headings ── */
+    h2 {
+      font-family: "Times New Roman", serif;
+      font-size: 14pt;
+      border-bottom: 2px solid #000;
+      margin-top: 24px;
+    }
+
+    /* ── Table ── */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 12px 0;
+      font-size: 11pt;
+    }
+    th {
+      background-color: #cccccc;
+      border: 1px solid #000;
+      padding: 6px 8px;
+      text-align: left;
+    }
+    td {
+      border: 1px solid #666;
+      padding: 5px 8px;
+    }
+    tr:nth-child(even) td { background-color: #f0f0f0; }
+
+    /* ── Color test boxes ── */
+    .swatches { display: flex; gap: 8px; margin: 12px 0; }
+    .swatch {
+      width: 60px; height: 40px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 9pt; font-weight: bold; color: white;
+    }
+
+    /* ── Fonts ── */
+    .font-arial    { font-family: Arial, sans-serif; }
+    .font-times    { font-family: "Times New Roman", serif; }
+    .font-courier  { font-family: "Courier New", monospace; }
+    .font-georgia  { font-family: Georgia, serif; }
+
+    /* ── Image section ── */
+    .img-row { display: flex; gap: 16px; align-items: flex-start; margin: 12px 0; }
+    .img-row img { border: 1px solid #999; }
+    .img-caption { font-size: 9pt; color: #555; margin-top: 4px; }
+
+    /* ── Signature line ── */
+    .sig-line {
+      margin-top: 40px;
+      border-top: 1px solid #000;
+      width: 3in;
+      font-size: 10pt;
+      color: #333;
+    }
+
+    /* ── Footer ── */
+    .footer {
+      margin-top: 40px;
+      border-top: 1px solid #ccc;
+      padding-top: 8px;
+      font-size: 9pt;
+      color: #777;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ── Header ── -->
+  <div class="header">&#128241; FAX RENDER TEST DOCUMENT</div>
+
+  <p style="margin-top:12px;">
+    <strong>Date:</strong> May 6, 2026 &nbsp;&nbsp;
+    <strong>To:</strong> Test Recipient &nbsp;&nbsp;
+    <strong>From:</strong> ExpFax Portal &nbsp;&nbsp;
+    <strong>Pages:</strong> 1
+  </p>
+
+  <!-- ── Section 1: Typography ── -->
+  <h2>1 · Font Rendering</h2>
+  <p class="font-arial">Arial 12pt — The quick brown fox jumps over the lazy dog. 1234567890</p>
+  <p class="font-times">Times New Roman 12pt — The quick brown fox jumps over the lazy dog. 1234567890</p>
+  <p class="font-courier">Courier New 12pt — The quick brown fox jumps over the lazy dog.</p>
+  <p class="font-georgia">Georgia 12pt — The quick brown fox jumps over the lazy dog.</p>
+  <p style="font-size:8pt;">8pt tiny text — can the fax renderer read this at 200 DPI?</p>
+  <p style="font-size:18pt;font-weight:bold;">18pt Bold Heading</p>
+
+  <!-- ── Section 2: Color ── -->
+  <h2>2 · Color → Grayscale Conversion</h2>
+  <p>These colours will be converted to grayscale by FaxBack's renderer. Check how different hues map:</p>
+  <div class="swatches">
+    <div class="swatch" style="background:#cc0000;">Red</div>
+    <div class="swatch" style="background:#0055cc;">Blue</div>
+    <div class="swatch" style="background:#007700;">Green</div>
+    <div class="swatch" style="background:#ff9900; color:#000;">Orange</div>
+    <div class="swatch" style="background:#9900cc;">Purple</div>
+    <div class="swatch" style="background:#cccccc; color:#000;">Lt Grey</div>
+    <div class="swatch" style="background:#333333;">Dk Grey</div>
+    <div class="swatch" style="background:#000000;">Black</div>
+  </div>
+
+  <!-- ── Section 3: Table ── -->
+  <h2>3 · Table Layout</h2>
+  <table>
+    <thead>
+      <tr><th>Item</th><th>Quantity</th><th>Unit Price</th><th>Total</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Widget A</td><td>10</td><td>$5.00</td><td>$50.00</td></tr>
+      <tr><td>Widget B</td><td>3</td><td>$25.00</td><td>$75.00</td></tr>
+      <tr><td>Service Fee</td><td>1</td><td>$100.00</td><td>$100.00</td></tr>
+      <tr><td colspan="3" style="text-align:right;font-weight:bold;">Grand Total</td><td><strong>$225.00</strong></td></tr>
+    </tbody>
+  </table>
+
+  <!-- ── Section 4: Embedded images ── -->
+  <h2>4 · Embedded Images (base64 data URIs)</h2>
+  <div class="img-row">
+
+    <!-- 60×60 red gradient PNG, base64 encoded inline -->
+    <div>
+      <img
+        src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADwAAAA8CAYAAAA6/NlyAAAAiUlEQVR4nO3BMQEAAADCoPVP7WsIoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAeAMBuAABHgAAAABJRU5ErkJggg=="
+        width="60" height="60" alt="Red square"
+      />
+      <div class="img-caption">Plain PNG (inline)</div>
+    </div>
+
+    <!-- A simple SVG rendered inline as an img via data URI -->
+    <div>
+      <img
+        src="data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='80' height='80'%3E%3Crect width='80' height='80' fill='%23003399'/%3E%3Ctext x='50%25' y='55%25' font-family='Arial' font-size='14' fill='white' text-anchor='middle'%3ESVG%3C/text%3E%3C/svg%3E"
+        width="80" height="80" alt="Blue SVG box"
+      />
+      <div class="img-caption">SVG image</div>
+    </div>
+
+    <!-- Striped test pattern PNG (8×8 black/white stripes tiled to 80×80) -->
+    <div>
+      <img
+        src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAHklEQVQoU2NkYGD4z8BAAoxACQYGBgYmJqITAAASMAQAd8kLbwAAAABJRU5ErkJggg=="
+        width="80" height="80" style="image-rendering:pixelated;" alt="Stripe pattern"
+      />
+      <div class="img-caption">Stripe pattern PNG</div>
+    </div>
+
+  </div>
+
+  <!-- ── Section 4b: External URL images ── -->
+  <h2>4b · External URL Images</h2>
+  <div class="img-row">
+
+    <!-- Well-known stable image from a public CDN -->
+    <div>
+      <img src="https://www.google.com/images/branding/googlelogo/2x/googlelogo_color_272x92dp.png"
+           width="136" height="46" alt="Google logo (external)" />
+      <div class="img-caption">Google logo (HTTPS)</div>
+    </div>
+
+    <!-- Wikipedia's own logo — simple, high contrast -->
+    <div>
+      <img src="https://upload.wikimedia.org/wikipedia/en/thumb/8/80/Wikipedia-logo-v2.svg/103px-Wikipedia-logo-v2.svg.png"
+           width="60" height="60" alt="Wikipedia logo (external)" />
+      <div class="img-caption">Wikipedia logo (HTTPS)</div>
+    </div>
+
+    <!-- A URL that does NOT exist — tests broken image handling -->
+    <div>
+      <img src="https://example.invalid/missing-image.png"
+           width="80" height="60" alt="Broken image" />
+      <div class="img-caption">Broken URL (should be blank)</div>
+    </div>
+
+    <!-- Relative path — will always be broken in both browser srcdoc and FaxBack -->
+    <div>
+      <img src="./logo.png" width="80" height="60" alt="Relative path image" />
+      <div class="img-caption">Relative path (always blank)</div>
+    </div>
+
+  </div>
+
+  <!-- ── Section 5: Long paragraph (line-wrap test) ── -->
+  <h2>5 · Line Wrap &amp; Paragraph Flow</h2>
+  <p>
+    Lorem ipsum dolor sit amet, consectetur adipiscing elit. Pellentesque habitant morbi
+    tristique senectus et netus et malesuada fames ac turpis egestas. Vestibulum tortor
+    quam, feugiat vitae, ultricies eget, tempor sit amet, ante. Donec eu libero sit amet
+    quam egestas semper. Aenean ultricies mi vitae est. Mauris placerat eleifend leo.
+  </p>
+  <p>
+    Quisque sit amet est et sapien ullamcorper pharetra. Vestibulum erat wisi, condimentum
+    sed, commodo vitae, ornare sit amet, wisi. Aenean fermentum, elit eget tincidunt
+    condimentum, eros ipsum rutrum orci, sagittis tempus lacus enim ac dui.
+  </p>
+
+  <!-- ── Signature ── -->
+  <div class="sig-line">Authorized Signature / Date</div>
+
+  <!-- ── Footer ── -->
+  <div class="footer">
+    ExpFax Render Test &bull; Generated May 6, 2026 &bull; This is a test document only.
+  </div>
+
+</body>
+</html>

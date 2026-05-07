@@ -63,6 +63,9 @@ export interface FaxBackQueueCounts {
   Send: number;
   Sending: number;
   Sent: number;
+  SentPendingDeletion: number;
+  Receiving: number;
+  ReceivedPendingDeletion: number;
   Failed: number;
 }
 

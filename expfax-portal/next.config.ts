@@ -9,7 +9,7 @@ const nextConfig: NextConfig = {
         headers: [
           { key: "X-DNS-Prefetch-Control", value: "on" },
           { key: "X-Content-Type-Options", value: "nosniff" },
-          { key: "X-Frame-Options", value: "DENY" },
+          { key: "X-Frame-Options", value: "SAMEORIGIN" },
         ],
       },
     ];

@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { validateSession } from "@/lib/auth/session";
-import { containers } from "@/lib/db/cosmos";
+import { subscribe } from "@/lib/faxback/sse-broker";
 
 export async function GET(request: NextRequest) {
   const { valid, user } = await validateSession();
@@ -9,35 +9,33 @@ export async function GET(request: NextRequest) {
   }
 
   const encoder = new TextEncoder();
+
   const stream = new ReadableStream({
-    async start(controller) {
-      const sendEvent = (data: unknown) => {
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
-      };
-
-      const poll = async () => {
+    start(controller) {
+      const send = (data: string) => {
         try {
-          const container = await containers.faxMessages();
-          const { resources } = await container.items
-            .query({
-              query: "SELECT c.id, c.status, c.recipients, c.subject, c.submitTime, c.documents FROM c WHERE c.userId = @uid AND c.status IN ('queued', 'sending') AND c.isDeleted = false ORDER BY c.submitTime DESC",
-              parameters: [{ name: "@uid", value: user.id }],
-            })
-            .fetchAll();
-
-          sendEvent({ type: "status_update", activeFaxes: resources });
-        } catch (error) {
-          console.error("SSE poll error:", error);
-        }
+          controller.enqueue(encoder.encode(`data: ${data}\n\n`));
+        } catch { /* controller closed */ }
       };
 
-      await poll();
+      // Collect all linked FaxBack account GUIDs (multi-account + legacy primary)
+      const accountGuids: string[] = [
+        ...(user.faxbackAccounts?.map((a) => a.accountGuid) ?? []),
+        ...(user.faxbackAccountGuid &&
+          !user.faxbackAccounts?.some((a) => a.accountGuid === user.faxbackAccountGuid)
+          ? [user.faxbackAccountGuid]
+          : []),
+      ].filter(Boolean);
 
-      const interval = setInterval(poll, 5000);
+      const unsubscribe = subscribe({
+        id: Symbol(),
+        accountGuids,
+        send,
+      });
 
       request.signal.addEventListener("abort", () => {
-        clearInterval(interval);
-        controller.close();
+        unsubscribe();
+        try { controller.close(); } catch { /* already closed */ }
       });
     },
   });

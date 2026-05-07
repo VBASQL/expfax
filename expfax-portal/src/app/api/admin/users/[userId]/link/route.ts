@@ -2,7 +2,7 @@
 import { getCurrentUser } from "@/lib/auth/session";
 import { containers } from "@/lib/db/cosmos";
 import { audit } from "@/lib/audit/logger";
-import type { MfaMode, User } from "@/types";
+import type { FaxBackAccountLink, MfaMode, User } from "@/types";
 
 const VALID_MFA: MfaMode[] = ["off", "always", "new_location"];
 
@@ -11,15 +11,21 @@ export async function POST(
   { params }: { params: Promise<{ userId: string }> }
 ) {
   const admin = await getCurrentUser();
-  if (!admin || admin.role !== "admin") {
+  if (!admin || !admin.isAdmin) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
   }
 
   const { userId } = await params;
   const body = (await request.json()) as Partial<{
+    // Legacy single-account link
     faxbackAccountId: string | null;
     faxbackAccountGuid: string | null;
     faxNumber: string | null;
+    // Multi-account operations
+    addAccount: { accountGuid: string; accountId: string; faxNumber?: string | null; label?: string | null };
+    removeAccount: { accountGuid: string };
+    setDefaultAccount: { accountGuid: string | null };
+    // Other settings
     role: User["role"];
     mfaMode: MfaMode;
     purgeDays: number | null;
@@ -35,12 +41,9 @@ export async function POST(
     body.faxbackAccountGuid !== undefined ||
     body.faxNumber !== undefined;
 
-  if (wantsLink && !user.signupCompletedAt) {
-    return NextResponse.json(
-      { error: "Cannot link FaxBack account before the user completes signup." },
-      { status: 400 }
-    );
-  }
+  const wantsAddAccount = !!body.addAccount;
+  const wantsRemoveAccount = !!body.removeAccount;
+  const wantsSetDefault = body.setDefaultAccount !== undefined;
 
   if (body.mfaMode !== undefined) {
     if (!VALID_MFA.includes(body.mfaMode)) {
@@ -56,22 +59,112 @@ export async function POST(
 
   const patches: Array<{ op: "set"; path: string; value: unknown }> = [];
 
+  // ── Legacy single-account link ─────────────────────────────────────────
   if (body.faxbackAccountId !== undefined)
     patches.push({ op: "set", path: "/faxbackAccountId", value: body.faxbackAccountId });
   if (body.faxbackAccountGuid !== undefined)
     patches.push({ op: "set", path: "/faxbackAccountGuid", value: body.faxbackAccountGuid });
   if (body.faxNumber !== undefined)
     patches.push({ op: "set", path: "/faxNumber", value: body.faxNumber });
+
+  if (wantsLink) {
+    patches.push({ op: "set", path: "/linkedBy", value: admin.id });
+    // Also sync into faxbackAccounts array so multi-account list is consistent
+    if (body.faxbackAccountGuid && body.faxbackAccountId) {
+      const existing = user.faxbackAccounts ?? [];
+      const alreadyThere = existing.some((a) => a.accountGuid === body.faxbackAccountGuid);
+      if (!alreadyThere) {
+        const link: FaxBackAccountLink = {
+          accountGuid: body.faxbackAccountGuid,
+          accountId: body.faxbackAccountId,
+          faxNumber: body.faxNumber ?? null,
+          label: null,
+          addedAt: new Date().toISOString(),
+          addedBy: admin.id,
+        };
+        patches.push({ op: "set", path: "/faxbackAccounts", value: [...existing, link] });
+      }
+      // Set as default if no default yet
+      if (!user.defaultFaxbackAccountGuid) {
+        patches.push({ op: "set", path: "/defaultFaxbackAccountGuid", value: body.faxbackAccountGuid });
+      }
+    }
+  }
+
+  // ── Multi-account: add ─────────────────────────────────────────────────
+  if (wantsAddAccount && body.addAccount) {
+    const { accountGuid, accountId, faxNumber = null, label = null } = body.addAccount;
+    if (!accountGuid || !accountId) {
+      return NextResponse.json({ error: "addAccount requires accountGuid and accountId" }, { status: 400 });
+    }
+    const existing = user.faxbackAccounts ?? [];
+    if (existing.some((a) => a.accountGuid === accountGuid)) {
+      return NextResponse.json({ error: "Account already linked to this user" }, { status: 409 });
+    }
+    const link: FaxBackAccountLink = {
+      accountGuid,
+      accountId,
+      faxNumber: faxNumber ?? null,
+      label: label ?? null,
+      addedAt: new Date().toISOString(),
+      addedBy: admin.id,
+    };
+    patches.push({ op: "set", path: "/faxbackAccounts", value: [...existing, link] });
+    // If this is the first account, also set as legacy primary and default
+    if (existing.length === 0) {
+      patches.push({ op: "set", path: "/faxbackAccountGuid", value: accountGuid });
+      patches.push({ op: "set", path: "/faxbackAccountId", value: accountId });
+      patches.push({ op: "set", path: "/faxNumber", value: faxNumber ?? null });
+      patches.push({ op: "set", path: "/defaultFaxbackAccountGuid", value: accountGuid });
+      patches.push({ op: "set", path: "/linkedBy", value: admin.id });
+    } else if (!user.defaultFaxbackAccountGuid) {
+      patches.push({ op: "set", path: "/defaultFaxbackAccountGuid", value: accountGuid });
+    }
+  }
+
+  // ── Multi-account: remove ──────────────────────────────────────────────
+  if (wantsRemoveAccount && body.removeAccount) {
+    const { accountGuid } = body.removeAccount;
+    const existing = user.faxbackAccounts ?? [];
+    const next = existing.filter((a) => a.accountGuid !== accountGuid);
+    patches.push({ op: "set", path: "/faxbackAccounts", value: next });
+    // If removing the current default, promote the first remaining or null
+    const currentDefault = user.defaultFaxbackAccountGuid ?? user.faxbackAccountGuid;
+    if (currentDefault === accountGuid) {
+      const newDefault = next[0]?.accountGuid ?? null;
+      patches.push({ op: "set", path: "/defaultFaxbackAccountGuid", value: newDefault });
+      // Also update legacy fields
+      patches.push({ op: "set", path: "/faxbackAccountGuid", value: next[0]?.accountGuid ?? null });
+      patches.push({ op: "set", path: "/faxbackAccountId", value: next[0]?.accountId ?? null });
+      patches.push({ op: "set", path: "/faxNumber", value: next[0]?.faxNumber ?? null });
+    }
+  }
+
+  // ── Multi-account: set default ─────────────────────────────────────────
+  if (wantsSetDefault) {
+    const newDefault = body.setDefaultAccount!.accountGuid;
+    if (newDefault !== null) {
+      const accounts = user.faxbackAccounts ?? [];
+      const acc = accounts.find((a) => a.accountGuid === newDefault);
+      if (!acc) {
+        return NextResponse.json({ error: "Account not found in user's linked accounts" }, { status: 404 });
+      }
+      patches.push({ op: "set", path: "/defaultFaxbackAccountGuid", value: newDefault });
+      // Keep legacy primary in sync
+      patches.push({ op: "set", path: "/faxbackAccountGuid", value: acc.accountGuid });
+      patches.push({ op: "set", path: "/faxbackAccountId", value: acc.accountId });
+      patches.push({ op: "set", path: "/faxNumber", value: acc.faxNumber ?? null });
+    } else {
+      patches.push({ op: "set", path: "/defaultFaxbackAccountGuid", value: null });
+    }
+  }
+
   if (body.role !== undefined)
     patches.push({ op: "set", path: "/role", value: body.role });
   if (body.mfaMode !== undefined)
     patches.push({ op: "set", path: "/mfaMode", value: body.mfaMode });
   if (body.purgeDays !== undefined)
     patches.push({ op: "set", path: "/purgeDays", value: body.purgeDays });
-
-  if (wantsLink) {
-    patches.push({ op: "set", path: "/linkedBy", value: admin.id });
-  }
 
   if (body.revokeTrustedLocationId) {
     const next = (user.trustedLocations ?? []).filter(
@@ -84,17 +177,29 @@ export async function POST(
 
   await container.item(userId, userId).patch(patches);
 
-  if (wantsLink) {
+  if (wantsLink || wantsAddAccount) {
     await audit({
       userId: admin.id,
       action: "admin.user_link",
       resourceType: "user",
       resourceId: userId,
-      detail: {
-        faxbackAccountId: body.faxbackAccountId,
-        faxbackAccountGuid: body.faxbackAccountGuid,
-        faxNumber: body.faxNumber,
-      },
+      detail: wantsAddAccount
+        ? { addAccount: body.addAccount }
+        : {
+            faxbackAccountId: body.faxbackAccountId,
+            faxbackAccountGuid: body.faxbackAccountGuid,
+            faxNumber: body.faxNumber,
+          },
+      request,
+    });
+  }
+  if (wantsRemoveAccount) {
+    await audit({
+      userId: admin.id,
+      action: "admin.user_link",
+      resourceType: "user",
+      resourceId: userId,
+      detail: { removeAccount: body.removeAccount },
       request,
     });
   }

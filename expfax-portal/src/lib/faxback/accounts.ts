@@ -55,17 +55,30 @@ export async function readAccount(accountGuid: string): Promise<AccountDetails> 
   );
   if (!res.ok) throw new Error(`ReadAccount failed: ${res.status}`);
 
-  const xml = await res.text();
-  const parsed = await parseStringPromise(xml, { explicitArray: false });
-  const account = parsed?.NSX?.Account || parsed?.Account || {};
+  const text = await res.text();
+
+  // Server returns JSON for GET requests
+  let account: Record<string, unknown> = {};
+  try {
+    const json = JSON.parse(text);
+    account = (json?.NSX?.Account ?? json?.Account ?? json) as Record<string, unknown>;
+  } catch {
+    // Fall back to XML
+    try {
+      const parsed = await parseStringPromise(text, { explicitArray: false });
+      account = parsed?.NSX?.Account || parsed?.Account || {};
+    } catch {
+      // Leave account as {}
+    }
+  }
 
   return {
-    accountGuid: account.AccountGuid || accountGuid,
-    accountId: account.AccountId || "",
-    emailAlias: account.EmailAlias || null,
-    queueProfileXml: account.QueueProfileXml || null,
-    useCoverPage: parseInt(account.UseCoverPage || "0", 10),
-    emailCoverType: parseInt(account.EmailCoverType || "0", 10),
+    accountGuid: (account.AccountGuid as string) || accountGuid,
+    accountId: (account.AccountId as string) || "",
+    emailAlias: (account.EmailAlias as string) || null,
+    queueProfileXml: (account.QueueProfileXml as string) || null,
+    useCoverPage: parseInt((account.UseCoverPage as string) || "0", 10),
+    emailCoverType: parseInt((account.EmailCoverType as string) || "0", 10),
     raw: account,
   };
 }

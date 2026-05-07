@@ -8,7 +8,7 @@ import { GlobalSearch } from "./global-search";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
 interface AppShellProps {
-  user: { displayName: string; role: string; email: string };
+  user: { displayName: string; isAdmin: boolean; email: string };
   title: string;
   isPending?: boolean;
   children: React.ReactNode;

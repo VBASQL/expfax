@@ -8,7 +8,7 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const user = await getCurrentUser();
-  if (!user || user.role !== "admin") {
+  if (!user || !user.isAdmin) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
   }
 

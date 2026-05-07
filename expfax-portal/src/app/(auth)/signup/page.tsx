@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ShieldCheck, KeyRound, AlertTriangle, Check, X } from "lucide-react";
+import { Logo } from "@/components/layout/logo";
 
 interface InvitationInfo {
   valid: boolean;
@@ -126,8 +127,8 @@ function SignupInner() {
   return (
     <Card className="w-full max-w-2xl shadow-lg border-slate-200">
       <CardHeader className="text-center pb-2">
-        <div className="mx-auto mb-3 w-12 h-12 rounded-xl bg-gradient-to-br from-blue-600 to-blue-400 flex items-center justify-center text-white font-bold text-lg">
-          EF
+        <div className="flex justify-center mb-3">
+          <Logo height={48} />
         </div>
         <h1 className="text-2xl font-bold tracking-tight text-slate-900">Welcome to ExpFax</h1>
         <p className="text-sm text-slate-500">

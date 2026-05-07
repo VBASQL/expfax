@@ -3,13 +3,13 @@ import { checkRateLimit } from "@/lib/security/rate-limit";
 
 const SECURITY_HEADERS: Record<string, string> = {
   "X-Content-Type-Options": "nosniff",
-  "X-Frame-Options": "DENY",
+  "X-Frame-Options": "SAMEORIGIN",
   "X-XSS-Protection": "1; mode=block",
   "Referrer-Policy": "strict-origin-when-cross-origin",
   "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
   "Strict-Transport-Security": "max-age=63072000; includeSubDomains; preload",
   "Content-Security-Policy":
-    "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; form-action 'self';",
+    "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; frame-src 'self'; frame-ancestors 'self'; form-action 'self';",
 };
 
 const RATE_LIMITS: Record<string, { max: number; windowMs: number }> = {

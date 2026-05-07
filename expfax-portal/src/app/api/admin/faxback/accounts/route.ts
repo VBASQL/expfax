@@ -6,7 +6,7 @@ const GUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 export async function GET(request: NextRequest) {
   const user = await getCurrentUser();
-  if (!user || user.role !== "admin") {
+  if (!user || !user.isAdmin) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
   }
 

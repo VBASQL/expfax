@@ -27,8 +27,8 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
   if (!resource) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
   // Remove old FaxBack entry if name changed
-  if (resource.templateName !== name.trim()) {
-    try { await fbDeleteTemplate(resource.templateName); } catch { /* ignore */ }
+  if (resource.templateName !== name.trim() && resource.templateGuid) {
+    try { await fbDeleteTemplate(resource.templateGuid); } catch { /* ignore */ }
   }
 
   // Re-generate and upload RTF
@@ -37,12 +37,12 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
     headerImageBase64: headerImageBase64 || undefined,
     headerImageType: headerImageType || undefined,
   });
-  await addTemplate(name.trim(), Buffer.from(rtf).toString("base64"), false);
+  const newGuid = await addTemplate(name.trim(), Buffer.from(rtf).toString("base64"), false);
 
   const updated: CoverTemplate = {
     ...resource,
     templateName: name.trim(),
-    templateGuid: name.trim(),
+    templateGuid: newGuid || resource.templateGuid,
     bodyText: bodyText || "",
     headerImageBase64: headerImageBase64 || undefined,
     headerImageType: headerImageType || undefined,
@@ -62,7 +62,7 @@ export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ 
   if (!resource) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
   try {
-    await fbDeleteTemplate(resource.templateName);
+    if (resource.templateGuid) await fbDeleteTemplate(resource.templateGuid);
   } catch (err) {
     console.error("FaxBack delete template error:", err);
   }

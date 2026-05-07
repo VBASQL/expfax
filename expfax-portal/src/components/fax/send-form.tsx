@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -8,8 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
-import { Send, Paperclip, ChevronDown, ChevronUp, X, Upload, Plus, Settings2, FileText, Image as ImageIcon, Eye } from "lucide-react";
-import { TemplateFieldsModal, type TemplateFieldValues } from "./template-fields-modal";
+import { Send, Paperclip, ChevronDown, ChevronUp, X, Upload, Plus, Image as ImageIcon, Eye } from "lucide-react";
 import { FaxPreviewModal, type CoverPreviewInfo } from "./fax-preview-modal";
 
 /** Renders a small thumbnail for image File objects, revoking the object URL on cleanup. */
@@ -32,8 +31,17 @@ interface Recipient {
   name: string;
 }
 
+interface FromAccount {
+  accountGuid: string;
+  accountId: string;
+  faxNumber: string | null;
+  label: string | null;
+}
+
 interface SendFormProps {
-  coverTemplates: Array<{ id: string; templateName: string; isDefault: boolean }>;
+  coverTemplates: Array<{ id: string; templateName: string; bodyText: string; isDefault: boolean }>;
+  fromAccounts?: FromAccount[];         // All linked FaxBack accounts for the user
+  defaultAccountGuid?: string | null;   // Which to pre-select
 }
 
 const RESOLUTION_OPTIONS = [
@@ -42,12 +50,18 @@ const RESOLUTION_OPTIONS = [
   { value: "3", label: "Superfine (200×400 DPI)" },
 ];
 
-export function SendForm({ coverTemplates }: SendFormProps) {
+export function SendForm({ coverTemplates, fromAccounts = [], defaultAccountGuid }: SendFormProps) {
   const router = useRouter();
   const [sending, setSending] = useState(false);
+  const sendingRef = useRef(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
+
+  // Which account to send from (only relevant when user has multiple accounts)
+  const [fromAccountGuid, setFromAccountGuid] = useState<string>(
+    defaultAccountGuid ?? fromAccounts[0]?.accountGuid ?? ""
+  );
 
   // Recipients (array of rows — always at least one)
   const [recipients, setRecipients] = useState<Recipient[]>([{ faxNumber: "", name: "" }]);
@@ -55,16 +69,9 @@ export function SendForm({ coverTemplates }: SendFormProps) {
 
   // Cover page
   const [useCover, setUseCover] = useState(false);
-  // "saved" = use a named FaxBack template, "onetime" = fill in inline and generate RTF
-  const [coverMode, setCoverMode] = useState<"saved" | "onetime">("saved");
-  const [coverTemplate, setCoverTemplate] = useState(
-    coverTemplates.find((t) => t.isDefault)?.templateName || ""
-  );
-  const [coverMessage, setCoverMessage] = useState("");
-  const [templateFieldsOpen, setTemplateFieldsOpen] = useState(false);
-  const [templateFields, setTemplateFields] = useState<TemplateFieldValues>({
-    senderName: "", senderCompany: "", senderFax: "", senderVoice: "", receiverName: "", receiverCompany: "",
-  });
+  // Selected template ID ("") = none — template provides letterhead + default body text
+  const defaultTemplate = coverTemplates.find((t) => t.isDefault);
+  const [coverTemplateId, setCoverTemplateId] = useState(defaultTemplate?.id ?? "");
   // One-time cover page fields
   const [oneTimeCover, setOneTimeCover] = useState({
     senderName: "",
@@ -132,10 +139,13 @@ export function SendForm({ coverTemplates }: SendFormProps) {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (sendingRef.current) return;
+    sendingRef.current = true;
     setError("");
 
     if (validRecipients.length === 0) {
       setError("At least one recipient fax number is required");
+      sendingRef.current = false;
       return;
     }
 
@@ -157,15 +167,13 @@ export function SendForm({ coverTemplates }: SendFormProps) {
         body: JSON.stringify({
           recipients: validRecipients,
           subject,
-          useCover: useCover && coverMode === "saved",
-          coverTemplate: useCover && coverMode === "saved" ? coverTemplate : undefined,
-          coverMessage: useCover && coverMode === "saved" ? coverMessage : undefined,
-          templateFields: useCover && coverMode === "saved" ? templateFields : undefined,
-          oneTimeCover: useCover && coverMode === "onetime" ? { ...oneTimeCover, subject } : undefined,
+          oneTimeCover: useCover ? { ...oneTimeCover, subject } : undefined,
+          coverTemplateId: useCover ? (coverTemplateId || undefined) : undefined,
           documents,
           resolution: parseInt(resolution, 10),
           scheduleTime: scheduleTime || undefined,
           billingCode: billingCode || undefined,
+          fromAccountGuid: fromAccountGuid || undefined,
         }),
       });
 
@@ -180,6 +188,7 @@ export function SendForm({ coverTemplates }: SendFormProps) {
     } catch {
       setError("An unexpected error occurred");
     } finally {
+      sendingRef.current = false;
       setSending(false);
     }
   }
@@ -206,6 +215,30 @@ export function SendForm({ coverTemplates }: SendFormProps) {
         <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg p-3">
           {error}
         </div>
+      )}
+
+      {/* From Account selector — only shown when user has multiple linked accounts */}
+      {fromAccounts.length > 1 && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-sm font-semibold">Send From</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <select
+              className="w-full text-sm border border-slate-200 rounded-md px-3 py-2 bg-white"
+              value={fromAccountGuid}
+              onChange={(e) => setFromAccountGuid(e.target.value)}
+            >
+              {fromAccounts.map((a) => (
+                <option key={a.accountGuid} value={a.accountGuid}>
+                  {a.label
+                    ? `${a.label} (${a.accountId}${a.faxNumber ? ` · ${a.faxNumber}` : ""})`
+                    : `${a.accountId}${a.faxNumber ? ` · ${a.faxNumber}` : ""}`}
+                </option>
+              ))}
+            </select>
+          </CardContent>
+        </Card>
       )}
 
       {/* Recipients */}
@@ -270,166 +303,116 @@ export function SendForm({ coverTemplates }: SendFormProps) {
           </div>
         </CardHeader>
         {useCover && (
-          <CardContent className="space-y-4">
-            {/* Mode selector */}
-            <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={() => setCoverMode("saved")}
-                className={`flex-1 flex items-center gap-2 rounded-lg border px-3 py-2.5 text-sm transition-colors ${
-                  coverMode === "saved"
-                    ? "border-blue-500 bg-blue-50 text-blue-700"
-                    : "border-slate-200 hover:border-slate-300 text-slate-600"
-                }`}
-              >
-                <FileText className="h-4 w-4 shrink-0" />
-                <span className="font-medium">Saved template</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setCoverMode("onetime")}
-                className={`flex-1 flex items-center gap-2 rounded-lg border px-3 py-2.5 text-sm transition-colors ${
-                  coverMode === "onetime"
-                    ? "border-blue-500 bg-blue-50 text-blue-700"
-                    : "border-slate-200 hover:border-slate-300 text-slate-600"
-                }`}
-              >
-                <Plus className="h-4 w-4 shrink-0" />
-                <span className="font-medium">One-time cover page</span>
-              </button>
-            </div>
-
-            {coverMode === "saved" && (
-              <>
-                <div className="flex items-end gap-3">
-                  <div className="flex-1 space-y-2">
-                    <Label>Template</Label>
-                    <select
-                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm"
-                      value={coverTemplate}
-                      onChange={(e) => setCoverTemplate(e.target.value)}
-                    >
-                      <option value="">None</option>
-                      {coverTemplates.map((t) => (
-                        <option key={t.id} value={t.templateName}>
-                          {t.templateName} {t.isDefault ? "(Default)" : ""}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <Button type="button" variant="outline" size="sm" onClick={() => setTemplateFieldsOpen(true)}>
-                    <Settings2 className="h-4 w-4 mr-1" /> Fill Fields
-                  </Button>
+          <CardContent>
+            <div className="space-y-3 rounded-lg border border-slate-100 bg-slate-50 p-4">
+              {/* Template selector */}
+              {coverTemplates.length > 0 && (
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Template (letterhead + default message)</Label>
+                  <select
+                    className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm"
+                    value={coverTemplateId}
+                    onChange={(e) => {
+                      const id = e.target.value;
+                      setCoverTemplateId(id);
+                      const tpl = coverTemplates.find((t) => t.id === id);
+                      if (tpl?.bodyText) {
+                        setOneTimeCover((v) => ({ ...v, message: tpl.bodyText }));
+                      }
+                    }}
+                  >
+                    <option value="">No template (plain cover)</option>
+                    {coverTemplates.map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.templateName}{t.isDefault ? " (Default)" : ""}
+                      </option>
+                    ))}
+                  </select>
                 </div>
-                <div className="space-y-2">
-                  <Label>Cover Message</Label>
-                  <Textarea
-                    placeholder="Message to appear on the cover page..."
-                    value={coverMessage}
-                    onChange={(e) => setCoverMessage(e.target.value)}
-                    rows={3}
+              )}
+              <p className="text-xs text-slate-500">
+                Fill in the details for this cover page. It will be generated and sent as the first page of the fax.
+              </p>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Your Name</Label>
+                  <Input
+                    placeholder="Sender name"
+                    value={oneTimeCover.senderName}
+                    onChange={(e) => setOneTimeCover((v) => ({ ...v, senderName: e.target.value }))}
                   />
                 </div>
-              </>
-            )}
-
-            {coverMode === "onetime" && (
-              <div className="space-y-3 rounded-lg border border-slate-100 bg-slate-50 p-4">
-                <p className="text-xs text-slate-500">
-                  Fill in the details for this cover page. It will be generated and sent as the first page of the fax.
-                </p>
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="space-y-1.5">
-                    <Label className="text-xs">Your Name</Label>
-                    <Input
-                      placeholder="Sender name"
-                      value={oneTimeCover.senderName}
-                      onChange={(e) => setOneTimeCover((v) => ({ ...v, senderName: e.target.value }))}
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label className="text-xs">Your Company</Label>
-                    <Input
-                      placeholder="Company name"
-                      value={oneTimeCover.senderCompany}
-                      onChange={(e) => setOneTimeCover((v) => ({ ...v, senderCompany: e.target.value }))}
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label className="text-xs">Your Fax Number</Label>
-                    <Input
-                      placeholder="(555) 123-4567"
-                      value={oneTimeCover.senderFax}
-                      onChange={(e) => setOneTimeCover((v) => ({ ...v, senderFax: e.target.value }))}
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label className="text-xs">Your Voice Number</Label>
-                    <Input
-                      placeholder="(555) 987-6543"
-                      value={oneTimeCover.senderVoice}
-                      onChange={(e) => setOneTimeCover((v) => ({ ...v, senderVoice: e.target.value }))}
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label className="text-xs">Recipient Name</Label>
-                    <Input
-                      placeholder="Recipient name"
-                      value={oneTimeCover.receiverName}
-                      onChange={(e) => setOneTimeCover((v) => ({ ...v, receiverName: e.target.value }))}
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label className="text-xs">Recipient Company</Label>
-                    <Input
-                      placeholder="Recipient company"
-                      value={oneTimeCover.receiverCompany}
-                      onChange={(e) => setOneTimeCover((v) => ({ ...v, receiverCompany: e.target.value }))}
-                    />
-                  </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Your Company</Label>
+                  <Input
+                    placeholder="Company name"
+                    value={oneTimeCover.senderCompany}
+                    onChange={(e) => setOneTimeCover((v) => ({ ...v, senderCompany: e.target.value }))}
+                  />
                 </div>
                 <div className="space-y-1.5">
-                  <Label className="text-xs">Cover Message</Label>
-                  <Textarea
-                    placeholder="Message to appear on the cover page..."
-                    value={oneTimeCover.message}
-                    onChange={(e) => setOneTimeCover((v) => ({ ...v, message: e.target.value }))}
-                    rows={3}
+                  <Label className="text-xs">Your Fax Number</Label>
+                  <Input
+                    placeholder="(555) 123-4567"
+                    value={oneTimeCover.senderFax}
+                    onChange={(e) => setOneTimeCover((v) => ({ ...v, senderFax: e.target.value }))}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Your Voice Number</Label>
+                  <Input
+                    placeholder="(555) 987-6543"
+                    value={oneTimeCover.senderVoice}
+                    onChange={(e) => setOneTimeCover((v) => ({ ...v, senderVoice: e.target.value }))}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Recipient Name</Label>
+                  <Input
+                    placeholder="Recipient name"
+                    value={oneTimeCover.receiverName}
+                    onChange={(e) => setOneTimeCover((v) => ({ ...v, receiverName: e.target.value }))}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Recipient Company</Label>
+                  <Input
+                    placeholder="Recipient company"
+                    value={oneTimeCover.receiverCompany}
+                    onChange={(e) => setOneTimeCover((v) => ({ ...v, receiverCompany: e.target.value }))}
                   />
                 </div>
               </div>
-            )}
+              <div className="space-y-1.5">
+                <Label className="text-xs">Cover Message</Label>
+                <Textarea
+                  placeholder="Message to appear on the cover page..."
+                  value={oneTimeCover.message}
+                  onChange={(e) => setOneTimeCover((v) => ({ ...v, message: e.target.value }))}
+                  rows={3}
+                />
+              </div>
+            </div>
           </CardContent>
         )}
       </Card>
-
-      {/* Template Fields Modal (saved template mode) */}
-      <TemplateFieldsModal
-        open={templateFieldsOpen}
-        onClose={() => setTemplateFieldsOpen(false)}
-        values={templateFields}
-        onSave={setTemplateFields}
-      />
 
       {/* Fax Preview Modal */}
       <FaxPreviewModal
         open={previewOpen}
         onClose={() => setPreviewOpen(false)}
         files={files}
-        cover={useCover ? (coverMode === "saved"
-          ? { mode: "saved", templateName: coverTemplate }
-          : {
-              mode: "onetime",
-              senderName: oneTimeCover.senderName,
-              senderCompany: oneTimeCover.senderCompany,
-              senderFax: oneTimeCover.senderFax,
-              senderVoice: oneTimeCover.senderVoice,
-              receiverName: oneTimeCover.receiverName,
-              receiverCompany: oneTimeCover.receiverCompany,
-              subject,
-              message: oneTimeCover.message,
-            }
-        ) : undefined}
+        cover={useCover ? {
+            mode: "onetime",
+            senderName: oneTimeCover.senderName,
+            senderCompany: oneTimeCover.senderCompany,
+            senderFax: oneTimeCover.senderFax,
+            senderVoice: oneTimeCover.senderVoice,
+            receiverName: oneTimeCover.receiverName,
+            receiverCompany: oneTimeCover.receiverCompany,
+            subject,
+            message: oneTimeCover.message,
+          } : undefined}
       />
 
       {/* Attachments */}

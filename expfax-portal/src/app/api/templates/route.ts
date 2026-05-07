@@ -46,14 +46,14 @@ export async function POST(request: Request) {
     headerImageType: headerImageType || undefined,
   });
   const contentBase64 = Buffer.from(rtf).toString("base64");
-  await addTemplate(name.trim(), contentBase64, false);
+  const fbGuid = await addTemplate(name.trim(), contentBase64, false);
 
   const now = new Date().toISOString();
   const template: CoverTemplate = {
     id: uuid(),
     userId: user.id,
     templateName: name.trim(),
-    templateGuid: name.trim(),
+    templateGuid: fbGuid,
     bodyText: bodyText || "",
     headerImageBase64: headerImageBase64 || undefined,
     headerImageType: headerImageType || undefined,

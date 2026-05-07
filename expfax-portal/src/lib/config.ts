@@ -33,6 +33,11 @@ interface AppConfig {
   // Storage
   faxStoragePath: string;
   storageBlobEndpoint: string;
+
+  // Azure resource identifiers (used for ARM role-assignment checks)
+  azureSubscriptionId: string;
+  azureResourceGroup: string;
+  azureAppServiceName: string;
 }
 
 let cachedConfig: AppConfig | null = null;
@@ -110,6 +115,10 @@ export async function getConfig(): Promise<AppConfig> {
 
     faxStoragePath: process.env.FAX_STORAGE_PATH || "./data/faxes",
     storageBlobEndpoint: process.env.STORAGE_BLOB_ENDPOINT || "",
+
+    azureSubscriptionId: process.env.AZURE_SUBSCRIPTION_ID || "",
+    azureResourceGroup: process.env.AZURE_RESOURCE_GROUP || "",
+    azureAppServiceName: process.env.AZURE_APP_SERVICE_NAME || "",
   };
 
   return cachedConfig;

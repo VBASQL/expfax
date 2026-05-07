@@ -12,13 +12,12 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
   const { resource } = await container.item(id, user.id).read();
   if (!resource) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-  const base64Content = await getTemplateContent(resource.templateName);
-  const buffer = Buffer.from(base64Content, "base64");
+  const buffer = await getTemplateContent(resource.templateGuid);
 
   return new NextResponse(new Uint8Array(buffer), {
     headers: {
       "Content-Type": "application/rtf",
-      "Content-Disposition": `attachment; filename="${resource.templateName}.rtf"`,
+      "Content-Disposition": `attachment; filename="${resource.templateName}"`,
     },
   });
 }

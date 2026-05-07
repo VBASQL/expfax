@@ -12,7 +12,14 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
-import { Mail, Link2, Shield, Users, ShieldCheck, KeyRound } from "lucide-react";
+import { Mail, Link2, Shield, Users, ShieldCheck, KeyRound, Plus, Trash2, Star } from "lucide-react";
+
+interface LinkedAccount {
+  accountGuid: string;
+  accountId: string;
+  faxNumber: string | null;
+  label: string | null;
+}
 
 interface UserRow {
   id: string;
@@ -23,6 +30,8 @@ interface UserRow {
   signupCompletedAt: string | null;
   faxbackAccountId: string | null;
   faxbackAccountGuid: string | null;
+  faxbackAccounts?: LinkedAccount[];
+  defaultFaxbackAccountGuid?: string | null;
   faxNumber: string | null;
   mfaMode?: "off" | "always" | "new_location";
   lastLogin: string | null;
@@ -41,7 +50,10 @@ type Filter = "unlinked" | "linked" | "all";
 export default function AdminUsersPage() {
   const [users, setUsers] = useState<UserRow[]>([]);
   const [filter, setFilter] = useState<Filter>("unlinked");
-  const [linkDialog, setLinkDialog] = useState<UserRow | null>(null);
+  // Dialog for managing all accounts of a user
+  const [manageDialog, setManageDialog] = useState<UserRow | null>(null);
+  // Dialog for picking and adding a new account
+  const [addDialog, setAddDialog] = useState<UserRow | null>(null);
   const [fbAccounts, setFbAccounts] = useState<FaxBackAccount[]>([]);
   const [fbLoading, setFbLoading] = useState(false);
   const [fbError, setFbError] = useState<string | null>(null);
@@ -49,6 +61,9 @@ export default function AdminUsersPage() {
   const [linkSearch, setLinkSearch] = useState("");
   const [selectedAcc, setSelectedAcc] = useState<FaxBackAccount | null>(null);
   const [saving, setSaving] = useState(false);
+  // Keep a local copy of accounts being managed so we can reflect immediate changes
+  const [managedAccounts, setManagedAccounts] = useState<LinkedAccount[]>([]);
+  const [managedDefault, setManagedDefault] = useState<string | null>(null);
 
   function load() {
     fetch("/api/admin/users")
@@ -66,42 +81,102 @@ export default function AdminUsersPage() {
     return users.filter((u) => !u.faxbackAccountId);
   }, [users, filter]);
 
-  async function handleLink() {
-    if (!linkDialog) return;
-    if (!selectedAcc) {
-      alert("Pick a FaxBack account first.");
-      return;
-    }
-    setSaving(true);
-    const res = await fetch(`/api/admin/users/${linkDialog.id}/link`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        faxbackAccountId: selectedAcc.accountId || null,
-        faxbackAccountGuid: selectedAcc.accountGuid || null,
-        faxNumber: selectedAcc.faxNumber || null,
-      }),
-    });
-    setSaving(false);
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      alert(err.error ?? "Link failed");
-      return;
-    }
-    setLinkDialog(null);
-    load();
+  function openManageDialog(u: UserRow) {
+    setManageDialog(u);
+    setManagedAccounts(u.faxbackAccounts ?? (
+      u.faxbackAccountGuid
+        ? [{ accountGuid: u.faxbackAccountGuid, accountId: u.faxbackAccountId ?? "", faxNumber: u.faxNumber ?? null, label: null }]
+        : []
+    ));
+    setManagedDefault(u.defaultFaxbackAccountGuid ?? u.faxbackAccountGuid ?? null);
   }
 
-  function openLinkDialog(u: UserRow) {
-    setLinkDialog(u);
-    setLinkGuid(u.faxbackAccountGuid || "");
+  function openAddDialog(u: UserRow) {
+    setAddDialog(u);
+    setLinkGuid("");
     setLinkSearch("");
     setSelectedAcc(null);
     setFbAccounts([]);
     setFbError(null);
     setFbLoading(false);
-    // Auto-load the full list when opening.
     void loadAccounts("");
+  }
+
+  async function handleAddAccount() {
+    if (!addDialog) return;
+    if (!selectedAcc) {
+      alert("Pick a FaxBack account first.");
+      return;
+    }
+    setSaving(true);
+    const res = await fetch(`/api/admin/users/${addDialog.id}/link`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        addAccount: {
+          accountGuid: selectedAcc.accountGuid,
+          accountId: selectedAcc.accountId,
+          faxNumber: selectedAcc.faxNumber ?? null,
+        },
+      }),
+    });
+    setSaving(false);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      alert(err.error ?? "Add account failed");
+      return;
+    }
+    setAddDialog(null);
+    // Re-open manage dialog with updated data
+    const updated: UserRow = {
+      ...addDialog,
+      faxbackAccounts: [
+        ...(managedAccounts),
+        { accountGuid: selectedAcc.accountGuid, accountId: selectedAcc.accountId, faxNumber: selectedAcc.faxNumber ?? null, label: null },
+      ],
+    };
+    load();
+    setManageDialog(updated);
+    setManagedAccounts(updated.faxbackAccounts ?? []);
+  }
+
+  async function handleRemoveAccount(u: UserRow, accountGuid: string) {
+    if (!confirm("Remove this account from the user?")) return;
+    setSaving(true);
+    const res = await fetch(`/api/admin/users/${u.id}/link`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ removeAccount: { accountGuid } }),
+    });
+    setSaving(false);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      alert(err.error ?? "Remove failed");
+      return;
+    }
+    const next = managedAccounts.filter((a) => a.accountGuid !== accountGuid);
+    setManagedAccounts(next);
+    if (managedDefault === accountGuid) {
+      setManagedDefault(next[0]?.accountGuid ?? null);
+    }
+    load();
+  }
+
+  async function handleSetDefault(u: UserRow, accountGuid: string) {
+    setSaving(true);
+    const res = await fetch(`/api/admin/users/${u.id}/link`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ setDefaultAccount: { accountGuid } }),
+    });
+    setSaving(false);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      alert(err.error ?? "Set default failed");
+      return;
+    }
+    setManagedDefault(accountGuid);
+    load();
   }
 
   async function loadAccounts(search: string) {
@@ -248,14 +323,33 @@ export default function AdminUsersPage() {
                     )}
                   </td>
                   <td className="px-5 py-3">
-                    {u.faxbackAccountId ? (
-                      <div>
-                        <p className="text-sm font-mono">{u.faxbackAccountId}</p>
-                        {u.faxNumber && <p className="text-xs text-slate-400">{u.faxNumber}</p>}
-                      </div>
-                    ) : (
-                      <Badge variant="outline" className="text-amber-600 text-[10px]">Not linked</Badge>
-                    )}
+                    {(() => {
+                      const accounts = u.faxbackAccounts ?? (
+                        u.faxbackAccountGuid
+                          ? [{ accountGuid: u.faxbackAccountGuid, accountId: u.faxbackAccountId ?? "", faxNumber: u.faxNumber ?? null, label: null }]
+                          : []
+                      );
+                      const defaultGuid = u.defaultFaxbackAccountGuid ?? u.faxbackAccountGuid;
+                      if (accounts.length === 0) {
+                        return <Badge variant="outline" className="text-amber-600 text-[10px]">Not linked</Badge>;
+                      }
+                      return (
+                        <div className="space-y-0.5">
+                          {accounts.map((a) => (
+                            <div key={a.accountGuid} className="flex items-center gap-1">
+                              {defaultGuid === a.accountGuid && (
+                                <Star className="h-3 w-3 text-amber-400 shrink-0" />
+                              )}
+                              <span className="text-sm font-mono">{a.accountId || a.accountGuid.slice(0, 8)}</span>
+                              {a.faxNumber && <span className="text-xs text-slate-400">{a.faxNumber}</span>}
+                            </div>
+                          ))}
+                          {accounts.length > 1 && (
+                            <p className="text-[10px] text-slate-400">{accounts.length} accounts</p>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </td>
                   <td className="px-5 py-3">
                     {authType === "microsoft" ? (
@@ -290,10 +384,10 @@ export default function AdminUsersPage() {
                         variant="ghost"
                         size="sm"
                         disabled={!canLink}
-                        title={canLink ? "Link FaxBack account" : "User hasn't signed up yet"}
-                        onClick={() => openLinkDialog(u)}
+                        title={canLink ? "Manage FaxBack accounts" : "User hasn't signed up yet"}
+                        onClick={() => openManageDialog(u)}
                       >
-                        <Link2 className="h-4 w-4 mr-1" /> Link
+                        <Link2 className="h-4 w-4 mr-1" /> Accounts
                       </Button>
                       {u.faxbackAccountId && (
                         <Link href={`/admin/users/${u.id}/email`}>
@@ -318,11 +412,77 @@ export default function AdminUsersPage() {
         </table>
       </div>
 
-      {/* Link Dialog */}
-      <Dialog open={!!linkDialog} onOpenChange={() => setLinkDialog(null)}>
+      {/* Manage Accounts Dialog */}
+      <Dialog open={!!manageDialog} onOpenChange={() => setManageDialog(null)}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>FaxBack Accounts — {manageDialog?.displayName}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            {managedAccounts.length === 0 ? (
+              <p className="text-sm text-slate-400">No accounts linked yet.</p>
+            ) : (
+              <div className="divide-y divide-slate-100 rounded-md border border-slate-200 bg-white overflow-hidden">
+                {managedAccounts.map((a) => {
+                  const isDefault = managedDefault === a.accountGuid;
+                  return (
+                    <div key={a.accountGuid} className={`flex items-center justify-between px-3 py-2 ${isDefault ? "bg-amber-50" : ""}`}>
+                      <div>
+                        <div className="flex items-center gap-1">
+                          {isDefault && <Star className="h-3 w-3 text-amber-400" />}
+                          <span className="text-sm font-mono font-medium">{a.accountId || a.accountGuid.slice(0, 12)}</span>
+                        </div>
+                        {a.faxNumber && <p className="text-xs text-slate-500">{a.faxNumber}</p>}
+                        {isDefault && <p className="text-[10px] text-amber-600">Default</p>}
+                      </div>
+                      <div className="flex items-center gap-1">
+                        {!isDefault && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            disabled={saving}
+                            title="Set as default"
+                            onClick={() => handleSetDefault(manageDialog!, a.accountGuid)}
+                          >
+                            <Star className="h-3.5 w-3.5" />
+                          </Button>
+                        )}
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          disabled={saving}
+                          className="text-red-500 hover:text-red-700"
+                          onClick={() => handleRemoveAccount(manageDialog!, a.accountGuid)}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setManageDialog(null)}>Close</Button>
+            <Button
+              onClick={() => {
+                const u = manageDialog!;
+                setManageDialog(null);
+                openAddDialog(u);
+              }}
+            >
+              <Plus className="h-4 w-4 mr-1" /> Add Account
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Add Account Dialog */}
+      <Dialog open={!!addDialog} onOpenChange={() => setAddDialog(null)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Link FaxBack Account — {linkDialog?.displayName}</DialogTitle>
+            <DialogTitle>Add FaxBack Account — {addDialog?.displayName}</DialogTitle>
           </DialogHeader>
           <div className="space-y-4 py-2">
             <div className="space-y-2">
@@ -404,29 +564,17 @@ export default function AdminUsersPage() {
                   Selected: {selectedAcc.accountId || "(no AccountId)"}
                   {selectedAcc.displayName ? ` — ${selectedAcc.displayName}` : ""}
                 </div>
-                <div className="text-emerald-700 font-mono text-xs">
-                  {selectedAcc.accountGuid}
-                </div>
+                <div className="text-emerald-700 font-mono text-xs">{selectedAcc.accountGuid}</div>
                 {selectedAcc.faxNumber && (
                   <div className="text-emerald-700">Fax: {selectedAcc.faxNumber}</div>
-                )}
-                {selectedAcc.emailAlias && (
-                  <div className="text-emerald-700">
-                    Email alias: {selectedAcc.emailAlias}
-                  </div>
                 )}
               </div>
             )}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setLinkDialog(null)}>
-              Cancel
-            </Button>
-            <Button
-              onClick={handleLink}
-              disabled={saving || !selectedAcc}
-            >
-              {saving ? "Saving..." : "Link Account"}
+            <Button variant="outline" onClick={() => setAddDialog(null)}>Cancel</Button>
+            <Button onClick={handleAddAccount} disabled={saving || !selectedAcc}>
+              {saving ? "Saving..." : "Add Account"}
             </Button>
           </DialogFooter>
         </DialogContent>

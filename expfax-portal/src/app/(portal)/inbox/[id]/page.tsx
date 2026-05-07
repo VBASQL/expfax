@@ -16,7 +16,7 @@ interface FaxDetail {
   status: string;
   submitTime: string;
   documents: Array<{ name: string; pageCount: number }>;
-  recipients: Array<{ name: string; faxNumber: string }>;
+  recipients: Array<{ name: string; faxNumber: string; pageCount?: number }>;
   faxImagePath: string;
 }
 
@@ -75,7 +75,7 @@ export default function InboxDetailPage() {
               <div><span className="text-slate-400">Subject:</span> <span className="ml-2">{fax.subject || "—"}</span></div>
               <div><span className="text-slate-400">Status:</span> <Badge variant="secondary" className="ml-2 text-[10px]">{fax.status}</Badge></div>
               <div><span className="text-slate-400">Received:</span> <span className="ml-2">{new Date(fax.submitTime).toLocaleString()}</span></div>
-              <div><span className="text-slate-400">Pages:</span> <span className="ml-2">{fax.documents?.reduce((s, d) => s + d.pageCount, 0) || "—"}</span></div>
+              <div><span className="text-slate-400">Pages:</span> <span className="ml-2">{fax.documents?.reduce((s, d) => s + d.pageCount, 0) || fax.recipients?.[0]?.pageCount || "—"}</span></div>
             </CardContent>
           </Card>
 

@@ -6,12 +6,13 @@ import { cn } from "@/lib/utils";
 import {
   LayoutDashboard, Send, Inbox, SendHorizontal, Activity,
   Users, FileText, Clock, Settings, X, LogOut,
-  HardDrive, DollarSign, ScrollText, HeartPulse, UserPlus
+  HardDrive, DollarSign, ScrollText, HeartPulse, UserPlus, BarChart2
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Logo } from "@/components/layout/logo";
 
 interface SidebarProps {
-  user: { displayName: string; role: string; email: string };
+  user: { displayName: string; isAdmin: boolean; email: string };
   isOpen: boolean;
   onClose: () => void;
 }
@@ -40,13 +41,14 @@ const adminNav = [
   { label: "Storage", href: "/admin/storage", icon: HardDrive },
   { label: "Costs", href: "/admin/costs", icon: DollarSign },
   { label: "Audit Log", href: "/admin/audit", icon: ScrollText },
+  { label: "Traffic", href: "/admin/traffic", icon: BarChart2 },
   { label: "System", href: "/admin/system", icon: HeartPulse },
 ];
 
 export function Sidebar({ user, isOpen, onClose }: SidebarProps) {
   const pathname = usePathname();
   const router = useRouter();
-  const isAdmin = user.role === "admin";
+  const isAdmin = user.isAdmin;
   const initials = user.displayName
     .split(" ")
     .map((n) => n[0])
@@ -106,10 +108,7 @@ export function Sidebar({ user, isOpen, onClose }: SidebarProps) {
       >
         {/* Brand */}
         <div className="flex items-center gap-3 px-5 py-5 border-b border-slate-200">
-          <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-blue-600 to-blue-400 flex items-center justify-center text-white font-bold text-sm">
-            EF
-          </div>
-          <span className="text-lg font-bold text-slate-800">ExpFax</span>
+          <Logo height={36} />
           <Button variant="ghost" size="icon" className="ml-auto lg:hidden" onClick={onClose}>
             <X className="h-5 w-5" />
           </Button>
@@ -154,7 +153,7 @@ export function Sidebar({ user, isOpen, onClose }: SidebarProps) {
           </div>
           <div className="min-w-0 flex-1">
             <p className="text-sm font-semibold text-slate-800 truncate">{user.displayName}</p>
-            <p className="text-xs text-slate-400 capitalize">{user.role}</p>
+            <p className="text-xs text-slate-400 capitalize">{user.isAdmin ? "Admin" : "User"}</p>
           </div>
           <Button
             variant="ghost"

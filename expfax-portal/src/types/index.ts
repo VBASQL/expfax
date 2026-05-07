@@ -15,15 +15,27 @@ export interface TrustedLocation {
   lastSeenAt: string;
 }
 
+export interface FaxBackAccountLink {
+  accountGuid: string;
+  accountId: string;
+  faxNumber: string | null;
+  label: string | null;          // Optional display name / label set by admin
+  addedAt: string;               // ISO — when admin added this account
+  addedBy: string;               // admin userId
+}
+
 export interface User {
   id: string;                    // PK + partition key
   entraId: string;               // Entra ID object ID (oid claim)
   email: string;
   displayName: string;
   authType: AuthType;            // How user authenticates
-  faxbackAccountGuid: string | null;
-  faxbackAccountId: string | null; // Friendly name
+  faxbackAccountGuid: string | null;          // Primary / default account (legacy)
+  faxbackAccountId: string | null;            // Primary / default account friendly name (legacy)
+  faxbackAccounts?: FaxBackAccountLink[];     // All linked accounts (multi-account)
+  defaultFaxbackAccountGuid?: string | null;  // Which account the user prefers by default
   role: "user" | "manager" | "admin";
+  isWorkforceAdmin?: boolean;       // True for ARM-privileged workforce accounts; excluded from user list
   linkedBy: string | null;       // Admin user id who linked FaxBack account
   isActive: boolean;
   signupCompletedAt: string | null; // Set when invitation flow completes
@@ -71,6 +83,7 @@ export interface Session {
   createdAt: string;
   ipAddress: string;
   userAgent: string;
+  isAdmin: boolean;              // Set at login from ARM role check — not DB state
 }
 
 // --- Contacts ---
@@ -151,6 +164,12 @@ export interface FaxMessage {
   isDeleted: boolean;            // Soft delete
   faxImagePath: string;          // Path to stored rendered-fax PDF (populated by poller)
   sentDocumentPaths: string[];   // Paths to original sent documents in Blob Storage
+  sentFromAccountGuid?: string | null;  // FaxBack accountGuid used to send this fax
+  sentFromAccountId?: string | null;    // Human-readable account id used to send this fax
+  receivedToAccountGuid?: string | null; // FaxBack accountGuid that received this fax (for shared-account visibility)
+  receivedToAccountId?: string | null;  // Human-readable account id (DID label) that received this fax
+  receivedToFaxNumber?: string | null;  // Local DID fax number that received this fax
+  tags: string[];                // User-defined labels (editable from the list view)
   recipients: FaxRecipient[];    // Embedded array
   documents: FaxDocument[];      // Embedded array
   createdAt: string;

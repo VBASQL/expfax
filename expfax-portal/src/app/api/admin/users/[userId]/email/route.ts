@@ -6,7 +6,7 @@ import { getAccountEmailSettings, updateEmailConfig } from "@/lib/faxback/accoun
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ userId: string }> }) {
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  if (user.role !== "admin") return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  if (!user.isAdmin) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
   const { userId } = await params;
   const container = await containers.users();
@@ -20,7 +20,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ use
 export async function PUT(request: NextRequest, { params }: { params: Promise<{ userId: string }> }) {
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  if (user.role !== "admin") return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  if (!user.isAdmin) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
   const { userId } = await params;
   const container = await containers.users();

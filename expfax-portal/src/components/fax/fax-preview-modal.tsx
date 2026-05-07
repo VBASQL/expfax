@@ -4,6 +4,8 @@ import { useEffect, useRef, useState } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { FileText, Image as ImageIcon, File, Loader2 } from "lucide-react";
+import { generateCoverHtml } from "@/lib/covers/html-generator";
+import mammoth from "mammoth";
 
 export interface CoverPreviewInfo {
   mode: "saved" | "onetime";
@@ -25,62 +27,62 @@ interface FaxPreviewModalProps {
   cover?: CoverPreviewInfo;
 }
 
-/** Renders an RTF-style cover page preview in HTML. */
+/** Renders the cover page inside an iframe using the same HTML bytes sent to FaxBack. */
 function CoverPreview({ info, pageNum }: { info: CoverPreviewInfo; pageNum: number }) {
-  const row = (label: string, value?: string) =>
-    value ? (
-      <tr>
-        <td className="pr-4 py-1 text-xs font-semibold text-slate-500 whitespace-nowrap align-top">{label}</td>
-        <td className="py-1 text-sm text-slate-800">{value}</td>
-      </tr>
-    ) : null;
+  if (info.mode === "saved") {
+    return (
+      <div className="mb-6">
+        <div className="flex items-center gap-2 mb-2 px-1">
+          <span className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Page {pageNum}</span>
+          <span className="text-xs text-slate-500">— Cover Page (saved template)</span>
+        </div>
+        <div className="rounded-lg border border-slate-200 bg-white shadow-sm overflow-hidden font-sans">
+          <div className="text-center py-10 px-6 text-slate-400">
+            <FileText className="h-10 w-10 mx-auto mb-3" />
+            <p className="text-sm">
+              Saved template:{" "}
+              <span className="font-semibold text-slate-600">{info.templateName || "(none)"}</span>
+            </p>
+            <p className="text-xs mt-1">
+              FaxBack fills in placeholder fields at send time — browser preview not available for saved
+              templates.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const html = generateCoverHtml({
+    senderName:      info.senderName      ?? "",
+    senderCompany:   info.senderCompany   ?? "",
+    senderFax:       info.senderFax       ?? "",
+    senderVoice:     info.senderVoice     ?? "",
+    receiverName:    info.receiverName    ?? "",
+    receiverCompany: info.receiverCompany ?? "",
+    subject:         info.subject         ?? "",
+    message:         info.message         ?? "",
+  });
 
   return (
     <div className="mb-6">
       <div className="flex items-center gap-2 mb-2 px-1">
         <span className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Page {pageNum}</span>
-        <span className="text-xs text-slate-500">— Cover Page (RTF)</span>
-        <span className="ml-auto text-[10px] bg-amber-50 text-amber-700 border border-amber-200 rounded px-1.5 py-0.5 shrink-0">
-          generated server-side
+        <span className="text-xs text-slate-500">— Cover Page (HTML)</span>
+        <span className="ml-auto text-[10px] bg-green-50 text-green-700 border border-green-200 rounded px-1.5 py-0.5 shrink-0">
+          exact bytes sent
         </span>
       </div>
-      <div className="rounded-lg border border-slate-200 bg-white shadow-sm p-6 font-serif">
-        {info.mode === "saved" ? (
-          <div className="text-center py-10 text-slate-400">
-            <FileText className="h-10 w-10 mx-auto mb-3" />
-            <p className="text-sm">
-              Saved template: <span className="font-semibold text-slate-600">{info.templateName || "(none)"}</span>
-            </p>
-            <p className="text-xs mt-1">
-              FaxBack fills in placeholder fields at send time — browser preview not available for saved templates.
-            </p>
-          </div>
-        ) : (
-          <>
-            <div className="text-center mb-6">
-              <p className="text-lg font-bold tracking-wide">FAX COVER SHEET</p>
-              <p className="text-xs text-slate-400">{new Date().toLocaleDateString()}</p>
-            </div>
-            <hr className="border-slate-300 mb-4" />
-            <table className="w-full mb-4">
-              <tbody>
-                {row("To:", info.receiverName)}
-                {row("Company:", info.receiverCompany)}
-                {row("From:", info.senderName)}
-                {row("Company:", info.senderCompany)}
-                {row("Fax:", info.senderFax)}
-                {row("Voice:", info.senderVoice)}
-                {row("Subject:", info.subject)}
-              </tbody>
-            </table>
-            {info.message && (
-              <>
-                <hr className="border-slate-200 mb-3" />
-                <p className="text-sm text-slate-700 whitespace-pre-wrap">{info.message}</p>
-              </>
-            )}
-          </>
-        )}
+      <div className="rounded-lg border border-slate-200 overflow-hidden bg-[#c8c8c8]" style={{ padding: "14px 10px" }}>
+        <div style={{ background: "#fff", boxShadow: "0 2px 10px rgba(0,0,0,0.22)", margin: "0 auto", aspectRatio: "8.5 / 11", overflow: "hidden" }}>
+          <iframe
+            srcDoc={html}
+            title="Cover Page preview"
+            sandbox="allow-scripts allow-same-origin"
+            scrolling="no"
+            style={{ width: "100%", height: "100%", border: "none", display: "block", filter: "grayscale(100%)" }}
+          />
+        </div>
       </div>
     </div>
   );
@@ -95,7 +97,7 @@ function CoverPreview({ info, pageNum }: { info: CoverPreviewInfo; pageNum: numb
  * Others: "unsupported" placeholder
  */
 function FilePreview({ file, index }: { file: File; index: number }) {
-  const [state, setState] = useState<"loading" | "image" | "pdf" | "unsupported" | "too_large" | "error">("loading");
+  const [state, setState] = useState<"loading" | "image" | "pdf" | "html" | "txt" | "docx" | "doc" | "unsupported" | "too_large" | "error">("loading");
   const [dataUrl, setDataUrl] = useState<string>();
   const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
   const fetchedRef = useRef(false);
@@ -106,6 +108,39 @@ function FilePreview({ file, index }: { file: File; index: number }) {
 
     (async () => {
       try {
+        // DOCX: convert to HTML via mammoth (client-side)
+        if (ext === "docx") {
+          const arrayBuf = await file.arrayBuffer();
+          const result = await mammoth.convertToHtml({ arrayBuffer: arrayBuf });
+          setDataUrl(result.value);
+          setState("docx");
+          return;
+        }
+        // DOC (old binary format): no pure-JS parser available
+        if (ext === "doc") {
+          setState("doc");
+          return;
+        }
+        // HTML and TXT render client-side — no server round-trip needed
+        if (["html", "htm"].includes(ext)) {
+          const text = await file.text();
+          // FaxBack's renderer does not support base64 PNG/JPEG data URIs.
+          // Replace them with a blank placeholder so the preview matches reality.
+          const sanitized = text.replace(
+            /src\s*=\s*(["'])data:image\/(?:png|jpeg|jpg|gif|webp|bmp);base64,[^"']*\1/gi,
+            'src="" data-fax-stripped="1"'
+          );
+          setDataUrl(sanitized);
+          setState("html");
+          return;
+        }
+        if (ext === "txt") {
+          const text = await file.text();
+          setDataUrl(text);
+          setState("txt");
+          return;
+        }
+
         const buffer = await file.arrayBuffer();
         const contentBase64 = Buffer.from(buffer).toString("base64");
 
@@ -143,8 +178,16 @@ function FilePreview({ file, index }: { file: File; index: number }) {
           badge("TIFF", "bg-slate-50 text-slate-500 border-slate-200")}
         {ext === "pdf" &&
           badge("PDF", "bg-rose-50 text-rose-600 border-rose-200")}
-        {["rtf","doc","docx"].includes(ext) &&
-          badge("Word/RTF", "bg-blue-50 text-blue-600 border-blue-200")}
+        {ext === "docx" &&
+          badge("DOCX preview", "bg-indigo-50 text-indigo-600 border-indigo-200")}
+        {ext === "doc" &&
+          badge("DOC — no preview", "bg-red-50 text-red-500 border-red-200")}
+        {ext === "rtf" &&
+          badge("RTF — no preview", "bg-slate-50 text-slate-500 border-slate-200")}
+        {["html","htm"].includes(ext) &&
+          badge("HTML", "bg-orange-50 text-orange-600 border-orange-200")}
+        {ext === "txt" &&
+          badge("TXT", "bg-slate-50 text-slate-500 border-slate-200")}
       </div>
 
       <div className="rounded-lg border border-slate-200 overflow-hidden bg-white shadow-sm">
@@ -169,8 +212,73 @@ function FilePreview({ file, index }: { file: File; index: number }) {
             src={dataUrl}
             title={file.name}
             className="w-full"
-            style={{ height: "70vh", border: "none" }}
+            style={{ height: "70vh", border: "none", filter: "grayscale(100%)" }}
           />
+        )}
+
+        {state === "html" && dataUrl && (
+          <>
+            <iframe
+              srcDoc={dataUrl}
+              title={file.name}
+              sandbox="allow-same-origin"
+              className="w-full"
+              style={{ height: "70vh", border: "none", filter: "grayscale(100%)" }}
+            />
+            <div className="px-3 py-2 bg-amber-50 border-t border-amber-200 text-[11px] text-amber-800 space-y-0.5">
+              <p className="font-semibold">HTML preview limitations — the fax may differ:</p>
+              <ul className="list-disc list-inside space-y-0.5">
+                <li>Inline base64 PNG/JPEG images are <strong>not rendered</strong> by FaxBack (shown blank above)</li>
+                <li>Some external HTTPS images may be blocked by FaxBack&apos;s fetcher</li>
+                <li>Emoji are dropped — use text or hosted images instead</li>
+                <li>Layout is rendered by FaxBack&apos;s server renderer, which may differ from your browser</li>
+                <li>For a faithful preview, export the file as PDF before sending</li>
+              </ul>
+            </div>
+          </>
+        )}
+
+        {state === "txt" && dataUrl && (
+          <pre className="w-full p-4 text-xs text-slate-700 whitespace-pre-wrap break-words overflow-auto" style={{ maxHeight: "70vh", filter: "grayscale(100%)" }}>
+            {dataUrl}
+          </pre>
+        )}
+
+        {state === "docx" && dataUrl && (
+          <>
+            <iframe
+              srcDoc={`<!DOCTYPE html><html><head><meta charset="UTF-8"><style>body{font-family:Arial,sans-serif;font-size:11pt;margin:1in;color:#000}img{max-width:100%}</style></head><body>${dataUrl}</body></html>`}
+              title={file.name}
+              sandbox="allow-same-origin"
+              className="w-full"
+              style={{ height: "70vh", border: "none", filter: "grayscale(100%)" }}
+            />
+            <div className="px-3 py-2 bg-amber-50 border-t border-amber-200 text-[11px] text-amber-800 space-y-0.5">
+              <p className="font-semibold">Approximate preview — the fax may differ:</p>
+              <ul className="list-disc list-inside space-y-0.5">
+                <li>FaxBack renders the file with its own Word engine — layout, fonts, and spacing may differ</li>
+                <li>Images are shown here but their size/position in the fax depends on Word&apos;s layout engine</li>
+                <li>Headers, footers, text boxes, and floating objects may not appear above</li>
+                <li>For an accurate preview, save as PDF and attach that instead</li>
+              </ul>
+            </div>
+          </>
+        )}
+
+        {state === "doc" && (
+          <div className="flex flex-col items-center justify-center py-14 px-6 text-slate-400 gap-3">
+            <FileText className="h-12 w-12" />
+            <div className="text-center max-w-xs">
+              <p className="text-sm font-medium text-slate-600">{file.name}</p>
+              <p className="text-xs text-slate-400 mt-2 leading-relaxed">
+                Old-format <strong>.doc</strong> files cannot be previewed in the browser.
+                The file will be sent and rendered by FaxBack&apos;s Word engine.
+              </p>
+              <p className="text-xs text-amber-600 mt-2 font-medium">
+                For an accurate preview, open in Word and save as PDF or DOCX first.
+              </p>
+            </div>
+          </div>
         )}
 
         {(state === "unsupported" || state === "too_large" || state === "error") && (

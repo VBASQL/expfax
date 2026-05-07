@@ -9,7 +9,7 @@ export default async function PortalLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const { valid, user } = await validateSession();
+  const { valid, user, isAdmin } = await validateSession();
 
   if (!valid || !user) {
     redirect("/login");
@@ -20,20 +20,20 @@ export default async function PortalLayout({
   const pathname = hdrs.get("x-pathname") ?? "";
   const isAdminPath = pathname.startsWith("/admin");
 
-  if (user.role === "admin" && pathname && !isAdminPath) {
+  if (isAdmin && pathname && !isAdminPath) {
     redirect("/admin/invitations");
   }
-  if (user.role !== "admin" && isAdminPath) {
+  if (!isAdmin && isAdminPath) {
     redirect("/");
   }
 
-  const isPending = user.role !== "admin" && !user.faxbackAccountGuid;
+  const isPending = !isAdmin && !user.faxbackAccountGuid;
 
   return (
     <AppShell
       user={{
         displayName: user.displayName,
-        role: user.role,
+        isAdmin,
         email: user.email,
       }}
       isPending={isPending}

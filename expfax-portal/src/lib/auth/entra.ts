@@ -1,4 +1,5 @@
 import { MicrosoftEntraId } from "arctic";
+import { DefaultAzureCredential } from "@azure/identity";
 import { getConfig } from "@/lib/config";
 import { containers } from "@/lib/db/cosmos";
 import type { User } from "@/types";
@@ -266,4 +267,53 @@ export async function findUserByEntraId(entraId: string): Promise<User | null> {
     .fetchAll();
 
   return resources.length > 0 ? (resources[0] as User) : null;
+}
+
+/**
+ * Check whether a workforce user (by Entra OID) has at least one Azure RBAC
+ * role assignment on the Cosmos DB account or Storage account.
+ * Uses the app's own credential to call the ARM role-assignments API.
+ * Returns false on any error so a misconfigured subscription never grants
+ * unintended access.
+ */
+export async function hasArmRoleOnAppResources(userOid: string): Promise<boolean> {
+  const config = await getConfig();
+  const { azureSubscriptionId, azureResourceGroup, cosmosEndpoint, storageBlobEndpoint } = config;
+
+  if (!azureSubscriptionId || !azureResourceGroup) {
+    // Env vars not set — fall back to tenant-membership-only check
+    console.warn("AZURE_SUBSCRIPTION_ID / AZURE_RESOURCE_GROUP not set; skipping ARM role check");
+    return true;
+  }
+
+  try {
+    const tenantId = process.env.AZURE_TENANT_ID || config.entraTenantId;
+    const credential = new DefaultAzureCredential(tenantId ? { tenantId } : undefined);
+    const tokenResponse = await credential.getToken("https://management.azure.com/.default");
+    const token = tokenResponse.token;
+
+    // Derive resource names from endpoints
+    const cosmosAccount = cosmosEndpoint.match(/\/\/([^.]+)\./)?.[1] ?? "";
+    const storageAccount = storageBlobEndpoint.match(/\/\/([^.]+)\./)?.[1] ?? "";
+
+    const resources = [
+      cosmosAccount && `subscriptions/${azureSubscriptionId}/resourceGroups/${azureResourceGroup}/providers/Microsoft.DocumentDB/databaseAccounts/${cosmosAccount}`,
+      storageAccount && `subscriptions/${azureSubscriptionId}/resourceGroups/${azureResourceGroup}/providers/Microsoft.Storage/storageAccounts/${storageAccount}`,
+    ].filter(Boolean) as string[];
+
+    for (const scope of resources) {
+      const url = `https://management.azure.com/${scope}/providers/Microsoft.Authorization/roleAssignments?api-version=2022-04-01&$filter=assignedTo('${userOid}')`;
+      const res = await fetch(url, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) continue;
+      const data = await res.json() as { value?: unknown[] };
+      if (data.value && data.value.length > 0) return true;
+    }
+
+    return false;
+  } catch (err) {
+    console.error("ARM role check failed:", err);
+    return false;
+  }
 }
