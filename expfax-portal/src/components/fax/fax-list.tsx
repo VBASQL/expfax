@@ -1,13 +1,12 @@
 ﻿"use client";
 
-import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Search, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, ChevronsUpDown, Tag, X, RefreshCw } from "lucide-react";
-import { formatPhone, normalizePhone } from "@/lib/phone";
-import { useContactNames } from "@/lib/contacts/use-contact-names";
+import { formatPhone } from "@/lib/phone";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -446,20 +445,6 @@ export function FaxList({ direction, basePath, accounts = [] }: FaxListProps) {
   const [allParties, setAllParties] = useState<string[]>([]);
   const pageSize = 20;
 
-  // ── Contact name enrichment ─────────────────────────────────────────────────
-  // Extract all unique counterparty numbers from the current page, then batch-
-  // resolve them against the contacts store.  Contact names always take priority
-  // over whatever name was stored on the fax record, and work retroactively.
-  const allFaxNumbers = useMemo(() => {
-    if (direction === "received") {
-      return items.map((item) => item.senderFaxNumber).filter(Boolean);
-    }
-    return items
-      .flatMap((item) => (item.recipients ?? []).map((r) => r.faxNumber))
-      .filter(Boolean);
-  }, [items, direction]);
-  const contactNames = useContactNames(allFaxNumbers);
-
   // ── SSE live updates ────────────────────────────────────────────────────────
   // Tracks in-flight faxes relevant to this direction from the shared SSE broker.
   const [activeFaxes, setActiveFaxes] = useState<SseLiveFax[]>([]);
@@ -724,28 +709,12 @@ export function FaxList({ direction, basePath, accounts = [] }: FaxListProps) {
           </span>
           <div className="flex flex-wrap gap-2">
             {activeFaxes.map((f) => {
-              const recipients = f.recipients ?? [];
-              const first = recipients[0];
-              const party = first?.address || "Unknown";
-              // Aggregate page totals across ALL recipients to avoid "10/5"
-              const totalPg = recipients.reduce((s, r) => s + (r.pageCount || 0), 0);
-              const txPg = recipients.reduce((s, r) => s + (r.pagesTransferred || 0), 0);
-              const pageInfo = totalPg > 0 ? ` · ${txPg}/${totalPg} pp` : "";
-              const extra = recipients.length - 1;
-              const label = `${formatPhone(party) || party}${extra > 0 ? ` +${extra}` : ""}`;
-              // Tooltip lists every recipient with its own progress
-              const tooltip = recipients.length > 1
-                ? recipients
-                    .map((r) => `${formatPhone(r.address) || r.address}: ${r.pagesTransferred || 0}/${r.pageCount || "?"}`)
-                    .join("\n")
-                : undefined;
+              const party = f.recipients?.[0]?.address || "Unknown";
+              const pg = f.recipients?.[0];
+              const pageInfo = pg && pg.pageCount > 0 ? ` · ${pg.pagesTransferred}/${pg.pageCount} pp` : "";
               return (
-                <span
-                  key={f.messageHandle}
-                  title={tooltip}
-                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 text-[11px] font-mono border border-amber-200"
-                >
-                  {direction === "received" ? "←" : "→"} {label}{pageInfo}
+                <span key={f.messageHandle} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 text-[11px] font-mono border border-amber-200">
+                  {direction === "received" ? "←" : "→"} {formatPhone(party) || party}{pageInfo}
                 </span>
               );
             })}
@@ -789,7 +758,7 @@ export function FaxList({ direction, basePath, accounts = [] }: FaxListProps) {
                 key={item.id}
                 className={`hover:bg-slate-50 transition-colors ${!item.isRead && direction === "received" ? "font-semibold" : ""}`}
               >
-                {/* From / To — contact name (live-resolved) takes priority over stored name */}
+                {/* From */}
                 <td className="px-5 py-3">
                   <Link href={`${basePath}/${item.id}`} className="block text-sm">
                     <div className="flex items-center gap-2">
@@ -797,49 +766,18 @@ export function FaxList({ direction, basePath, accounts = [] }: FaxListProps) {
                         <span className="w-2 h-2 bg-blue-500 rounded-full shrink-0" />
                       )}
                       {direction === "received"
-                        ? (() => {
-                            const num = item.senderFaxNumber
-                              || item.recipients?.[0]?.callerID
-                              || item.recipients?.[0]?.remoteCsid
-                              || "";
-                            const contactName = num ? contactNames[normalizePhone(num)]?.name : undefined;
-                            const displayName = contactName || item.senderName || "";
-                            const formatted = formatPhone(num);
-                            if (!displayName && !formatted) return "Unknown";
-                            if (displayName && formatted && displayName !== formatted) {
-                              return (
-                                <span>
-                                  {displayName} <span className="text-slate-400 font-normal font-mono text-xs">· {formatted}</span>
-                                </span>
-                              );
-                            }
-                            return displayName || formatted;
-                          })()
+                        ? (formatPhone(item.senderFaxNumber)
+                            || formatPhone(item.recipients?.[0]?.callerID || "")
+                            || formatPhone(item.recipients?.[0]?.remoteCsid || "")
+                            || item.senderName
+                            || "Unknown")
                         : (() => {
                             const r = item.recipients?.[0];
                             if (!r) return "Unknown";
-                            const contactName = contactNames[normalizePhone(r.faxNumber)]?.name;
-                            const name = contactName || r.name || "";
                             const num = formatPhone(r.faxNumber);
-                            const label = name ? (
-                              <span>
-                                {name} <span className="text-slate-400 font-normal font-mono text-xs">· {num}</span>
-                              </span>
-                            ) : <span>{num}</span>;
+                            const label = r.name ? `${r.name} · ${num}` : num;
                             const extra = (item.recipients?.length ?? 0) - 1;
-                            if (extra <= 0) return label;
-                            const tooltip = item.recipients
-                              ?.map((rr) => {
-                                const cn = contactNames[normalizePhone(rr.faxNumber)]?.name;
-                                const n = cn || rr.name || "";
-                                return n ? `${n} · ${formatPhone(rr.faxNumber)}` : formatPhone(rr.faxNumber);
-                              })
-                              .join("\n");
-                            return (
-                              <span title={tooltip}>
-                                {label} <span className="text-slate-400">+{extra} more</span>
-                              </span>
-                            );
+                            return extra > 0 ? `${label} +${extra} more` : label;
                           })()}
                     </div>
                   </Link>
