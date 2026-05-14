@@ -13,6 +13,12 @@ import { readMessageBlock } from "@/lib/faxback/messages";
 
 const POLL_INTERVAL_MS = 5_000;
 
+// How many consecutive polls a handle can be "missing" from FaxBack queues
+// before we drop it from the UI. Smooths over the brief gap when FaxBack moves
+// a handle Send→Sending→Sent (it's momentarily in neither queue) and over
+// transient ReadQueue errors.
+const STALE_TOLERANCE_POLLS = 2;
+
 // Portal queue numbers
 const QUEUE_SEND = 2;
 const QUEUE_SENDING = 3;
@@ -25,6 +31,7 @@ interface LiveFaxRecipient {
   pageCount: number;
   pagesTransferred: number;
   connectBps: number;
+  connectSeconds: number;
   portUsed: string;
   retries: number;
 }
@@ -49,6 +56,7 @@ function normalizeRecipients(raw: unknown): LiveFaxRecipient[] {
     pageCount: Number(r.PageCount) || 0,
     pagesTransferred: Number(r.PagesTransferred) || 0,
     connectBps: Number(r.ConnectBPS) || 0,
+    connectSeconds: Number(r.ConnectSeconds) || 0,
     portUsed: String(r.PortUsed || ""),
     retries: Number(r.Retries) || 0,
   }));
@@ -79,25 +87,85 @@ let pollerHandle: ReturnType<typeof setInterval> | null = null;
 const lastPayload = new Map<string, string>();
 const EMPTY_PAYLOAD = JSON.stringify({ type: "status_update", activeFaxes: [] });
 
+/**
+ * Sticky cache of the most recent LiveFax we've seen for each handle, plus
+ * how many consecutive polls it has been missing from the FaxBack queues.
+ *
+ * Why: FaxBack's ReadQueue is eventually-consistent and a handle is briefly
+ * absent from BOTH Send and Sending while it's being moved between them.
+ * Per-recipient PageCount/PagesTransferred are also populated lazily and can
+ * momentarily come back lower than a previous sample. Without this cache the
+ * UI would clear mid-transmission and page counters would visibly jitter.
+ */
+interface CachedFax {
+  fax: LiveFax;
+  accountGuid: string;
+  missedPolls: number;
+}
+const handleCache = new Map<string, CachedFax>();
+
+/** Merge a fresh LiveFax with the previously cached one, clamping monotonic
+ *  counters so values can never go backwards within a single transmission. */
+function mergeWithCached(fresh: LiveFax, prev: LiveFax | undefined): LiveFax {
+  if (!prev) return fresh;
+
+  // Build a lookup of previous recipients by address so per-recipient
+  // counters can be clamped individually (handles multi-recipient faxes).
+  const prevByAddr = new Map(prev.recipients.map((r) => [r.address, r]));
+  const mergedRecipients = fresh.recipients.map((r) => {
+    const p = prevByAddr.get(r.address);
+    if (!p) return r;
+    return {
+      ...r,
+      pageCount: Math.max(r.pageCount, p.pageCount),
+      pagesTransferred: Math.max(r.pagesTransferred, p.pagesTransferred),
+      connectSeconds: Math.max(r.connectSeconds, p.connectSeconds),
+      retries: Math.max(r.retries, p.retries),
+    };
+  });
+
+  // If FaxBack returned fewer recipients than we previously saw (transient
+  // partial response), keep the previously-known ones so the totals don't drop.
+  const freshAddrs = new Set(fresh.recipients.map((r) => r.address));
+  for (const p of prev.recipients) {
+    if (!freshAddrs.has(p.address)) mergedRecipients.push(p);
+  }
+
+  return { ...fresh, recipients: mergedRecipients };
+}
+
 // --- Polling loop ------------------------------------------------------------
 
 async function runPoll() {
   if (subscribers.size === 0) return; // nothing to do
 
   try {
-    const [sendHandles, sendingHandles, receivingHandles] = await Promise.all([
-      readQueue(QUEUE_SEND).catch(() => [] as string[]),
-      readQueue(QUEUE_SENDING).catch(() => [] as string[]),
-      readQueue(QUEUE_RECEIVING).catch(() => [] as string[]),
+    // Run the three queue reads, but track failures explicitly. If ANY of them
+    // fails we treat the whole poll as inconclusive and skip the broadcast,
+    // so a transient FaxBack/session blip doesn't clear the UI.
+    const results = await Promise.all([
+      readQueue(QUEUE_SEND).then((h) => ({ ok: true as const, h }), () => ({ ok: false as const, h: [] as string[] })),
+      readQueue(QUEUE_SENDING).then((h) => ({ ok: true as const, h }), () => ({ ok: false as const, h: [] as string[] })),
+      readQueue(QUEUE_RECEIVING).then((h) => ({ ok: true as const, h }), () => ({ ok: false as const, h: [] as string[] })),
     ]);
+    if (results.some((r) => !r.ok)) {
+      console.warn("[sse-broker] one or more ReadQueue calls failed — skipping broadcast to preserve last state");
+      return;
+    }
+    const [sendHandles, sendingHandles, receivingHandles] = results.map((r) => r.h);
 
     const allHandles = [...sendHandles, ...sendingHandles, ...receivingHandles];
+    const seenThisPoll = new Set(allHandles);
 
-    // Map: accountGuid → LiveFax[]
-    const byAccount = new Map<string, LiveFax[]>();
-
+    // Fetch details and update the sticky cache
     if (allHandles.length > 0) {
-      const details = await readMessageBlock(allHandles);
+      let details: unknown[];
+      try {
+        details = await readMessageBlock(allHandles);
+      } catch (err) {
+        console.warn("[sse-broker] ReadMessageBlock failed — skipping broadcast:", err);
+        return;
+      }
 
       for (const msg of details) {
         const m = msg as Record<string, unknown>;
@@ -105,7 +173,7 @@ async function runPoll() {
         if (!accountGuid) continue;
 
         const handle = String(m.MessageHandle || m.Handle || "");
-        const fax: LiveFax = {
+        const fresh: LiveFax = {
           messageHandle: handle,
           subject: String(m.Subject || ""),
           direction: handle.startsWith("R-") ? "inbound" : "outbound",
@@ -114,11 +182,32 @@ async function runPoll() {
           submitTime: String(m.SubmitTime || ""),
           recipients: normalizeRecipients(m.Recipient),
         };
-
-        const list = byAccount.get(accountGuid) ?? [];
-        list.push(fax);
-        byAccount.set(accountGuid, list);
+        const prev = handleCache.get(handle);
+        handleCache.set(handle, {
+          fax: mergeWithCached(fresh, prev?.fax),
+          accountGuid,
+          missedPolls: 0,
+        });
       }
+    }
+
+    // Age out anything not seen this poll. Drop only after STALE_TOLERANCE_POLLS
+    // consecutive misses to ride out brief queue-transition gaps.
+    for (const [handle, cached] of handleCache) {
+      if (!seenThisPoll.has(handle)) {
+        cached.missedPolls += 1;
+        if (cached.missedPolls > STALE_TOLERANCE_POLLS) {
+          handleCache.delete(handle);
+        }
+      }
+    }
+
+    // Group the cached faxes by accountGuid for broadcast
+    const byAccount = new Map<string, LiveFax[]>();
+    for (const cached of handleCache.values()) {
+      const list = byAccount.get(cached.accountGuid) ?? [];
+      list.push(cached.fax);
+      byAccount.set(cached.accountGuid, list);
     }
 
     // Broadcast to all subscribers, filtered by their linked account guids

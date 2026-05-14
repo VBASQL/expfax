@@ -7,16 +7,17 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { ArrowDown, ArrowUp, Download } from "lucide-react";
 import Link from "next/link";
+import { formatPhone } from "@/lib/phone";
 
 interface FaxRow {
   id: string;
-  direction: "inbound" | "outbound";
+  direction: "received" | "sent";
   subject?: string;
   status: string;
   submitTime: string;
   recipients?: Array<{ name?: string; faxNumber: string }>;
-  callerName?: string;
-  callerNumber?: string;
+  senderName?: string;
+  senderFaxNumber?: string;
 }
 
 function StatusBadge({ status }: { status: string }) {
@@ -32,38 +33,64 @@ export default function HistoryPage() {
   const [rows, setRows] = useState<FaxRow[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
   const [search, setSearch] = useState("");
   const [direction, setDirection] = useState("all");
   const [status, setStatus] = useState("all");
-  const [dateFrom, setDateFrom] = useState("");
+  const [dateFrom, setDateFrom] = useState(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 30);
+    return d.toISOString().slice(0, 10);
+  });
   const [dateTo, setDateTo] = useState("");
   const [loading, setLoading] = useState(false);
-  const limit = 50;
+
+  // Load page size from user settings once on mount
+  useEffect(() => {
+    fetch("/api/settings")
+      .then((r) => r.ok ? r.json() : null)
+      .then((data) => {
+        const saved = data?.preferences?.itemsPerPage;
+        if (saved === 10 || saved === 20 || saved === 50) setPageSize(saved);
+      })
+      .catch(() => {});
+  }, []);
+
+  const buildFilterParams = useCallback(() => {
+    const p = new URLSearchParams();
+    if (search) p.set("search", search);
+    if (direction !== "all") p.set("direction", direction);
+    if (status !== "all") p.set("status", status);
+    if (dateFrom) p.set("dateFrom", dateFrom);
+    if (dateTo) p.set("dateTo", dateTo);
+    return p;
+  }, [search, direction, status, dateFrom, dateTo]);
 
   const load = useCallback(() => {
     setLoading(true);
-    const params = new URLSearchParams({ includeAll: "true", page: String(page), limit: String(limit) });
-    if (search) params.set("search", search);
-    if (direction !== "all") params.set("direction", direction);
-    if (status !== "all") params.set("status", status);
-    if (dateFrom) params.set("dateFrom", dateFrom);
-    if (dateTo) params.set("dateTo", dateTo);
-
+    const params = buildFilterParams();
+    params.set("page", String(page));
+    params.set("pageSize", String(pageSize));
     fetch(`/api/fax?${params}`)
       .then((r) => r.json())
       .then((data) => { setRows(data.items || []); setTotal(data.total || 0); })
       .finally(() => setLoading(false));
-  }, [page, search, direction, status, dateFrom, dateTo]);
+  }, [page, pageSize, buildFilterParams]);
 
   useEffect(() => { load(); }, [load]);
 
-  const totalPages = Math.ceil(total / limit);
+  const totalPages = Math.ceil(total / pageSize);
+
+  function handleExport() {
+    const params = buildFilterParams();
+    window.location.href = `/api/fax/export?${params}`;
+  }
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold">History</h2>
-        <Button variant="outline" size="sm" onClick={() => window.open("/api/fax/export", "_blank")}>
+        <Button variant="outline" size="sm" onClick={handleExport}>
           <Download className="h-4 w-4 mr-1" /> Export CSV
         </Button>
       </div>
@@ -83,8 +110,8 @@ export default function HistoryPage() {
               className="border border-slate-200 rounded-md px-3 py-2 text-sm"
             >
               <option value="all">All Directions</option>
-              <option value="inbound">Inbound</option>
-              <option value="outbound">Outbound</option>
+              <option value="received">Inbound</option>
+              <option value="sent">Outbound</option>
             </select>
             <select
               value={status}
@@ -96,8 +123,24 @@ export default function HistoryPage() {
               <option value="received">Received</option>
               <option value="failed">Failed</option>
             </select>
-            <Input type="date" value={dateFrom} onChange={(e) => { setDateFrom(e.target.value); setPage(1); }} className="w-40" />
-            <Input type="date" value={dateTo} onChange={(e) => { setDateTo(e.target.value); setPage(1); }} className="w-40" />
+            <label className="flex items-center gap-1.5 text-sm text-slate-500">
+              From
+              <Input type="date" value={dateFrom} onChange={(e) => { setDateFrom(e.target.value); setPage(1); }} className="w-40" />
+            </label>
+            <label className="flex items-center gap-1.5 text-sm text-slate-500">
+              To
+              <Input type="date" value={dateTo} onChange={(e) => { setDateTo(e.target.value); setPage(1); }} className="w-40" />
+            </label>
+            <select
+              value={pageSize}
+              onChange={(e) => { setPageSize(Number(e.target.value)); setPage(1); }}
+              className="border border-slate-200 rounded-md px-3 py-2 text-sm ml-auto"
+              title="Rows per page"
+            >
+              <option value={10}>10 / page</option>
+              <option value={20}>20 / page</option>
+              <option value={50}>50 / page</option>
+            </select>
           </div>
 
           {loading ? (
@@ -118,15 +161,15 @@ export default function HistoryPage() {
                 </thead>
                 <tbody>
                   {rows.map((row) => {
-                    const href = row.direction === "inbound" ? `/inbox/${row.id}` : `/sent/${row.id}`;
-                    const contact = row.direction === "inbound"
-                      ? (row.callerName || row.callerNumber || "Unknown")
-                      : (row.recipients?.[0]?.name || row.recipients?.[0]?.faxNumber || "Unknown");
+                    const href = row.direction === "received" ? `/inbox/${row.id}?from=history` : `/sent/${row.id}?from=history`;
+                    const contact = row.direction === "received"
+                      ? (row.senderName || formatPhone(row.senderFaxNumber ?? "") || "Unknown")
+                      : (row.recipients?.[0]?.name || formatPhone(row.recipients?.[0]?.faxNumber ?? "") || "Unknown");
 
                     return (
                       <tr key={row.id} className="border-b last:border-0 hover:bg-slate-50">
                         <td className="py-2 pr-4">
-                          {row.direction === "inbound"
+                          {row.direction === "received"
                             ? <ArrowDown className="h-4 w-4 text-blue-400" />
                             : <ArrowUp className="h-4 w-4 text-emerald-500" />}
                         </td>
@@ -146,10 +189,10 @@ export default function HistoryPage() {
             </div>
           )}
 
-          {totalPages > 1 && (
+          {total > 0 && (
             <div className="flex items-center justify-between mt-4 pt-4 border-t">
               <p className="text-xs text-slate-400">
-                Page {page} of {totalPages} ({total} total)
+                {totalPages > 1 ? `Page ${page} of ${totalPages} (${total} total)` : `${total} record${total !== 1 ? "s" : ""}`}
               </p>
               <div className="flex gap-2">
                 <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>

@@ -11,7 +11,8 @@ import {
   CommandItem,
 } from "@/components/ui/command";
 import { Badge } from "@/components/ui/badge";
-import { Inbox, SendHorizontal } from "lucide-react";
+import { Inbox, SendHorizontal, UserRound } from "lucide-react";
+import { formatPhone } from "@/lib/phone";
 
 interface SearchResult {
   id: string;
@@ -24,6 +25,13 @@ interface SearchResult {
   submitTime: string;
 }
 
+interface ContactResult {
+  id: string;
+  name: string;
+  faxNumber: string;
+  company: string;
+}
+
 interface GlobalSearchProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -33,6 +41,7 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
   const router = useRouter();
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
+  const [contacts, setContacts] = useState<ContactResult[]>([]);
   const [loading, setLoading] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
@@ -50,8 +59,10 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
         const res = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
         const data = await res.json();
         setResults(data.results || []);
+        setContacts(data.contacts || []);
       } catch {
         setResults([]);
+        setContacts([]);
       } finally {
         setLoading(false);
       }
@@ -65,6 +76,7 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
     if (!open) {
       setQuery("");
       setResults([]);
+      setContacts([]);
     }
   }, [open]);
 
@@ -87,11 +99,11 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
 
   function ResultItem({ r }: { r: SearchResult }) {
     const label = r.direction === "received"
-      ? r.senderName || r.senderFaxNumber
-      : r.recipients?.[0]?.name || r.recipients?.[0]?.faxNumber || "Unknown";
+      ? r.senderName || formatPhone(r.senderFaxNumber)
+      : r.recipients?.[0]?.name || formatPhone(r.recipients?.[0]?.faxNumber || "") || "Unknown";
     const number = r.direction === "received"
-      ? r.senderFaxNumber
-      : r.recipients?.[0]?.faxNumber || "";
+      ? formatPhone(r.senderFaxNumber)
+      : formatPhone(r.recipients?.[0]?.faxNumber || "");
 
     return (
       <CommandItem onSelect={() => handleSelect(r)} className="flex items-center gap-3 py-2">
@@ -120,7 +132,7 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
   }
 
   return (
-    <CommandDialog open={open} onOpenChange={onOpenChange}>
+    <CommandDialog open={open} onOpenChange={onOpenChange} shouldFilter={false}>
       <CommandInput placeholder="Search faxes by number, name, or subject..." value={query} onValueChange={setQuery} />
       <CommandList>
         {loading && <div className="py-4 text-center text-xs text-slate-400">Searching...</div>}
@@ -134,6 +146,26 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
         {sent.length > 0 && (
           <CommandGroup heading="Sent">
             {sent.map((r) => <ResultItem key={r.id} r={r} />)}
+          </CommandGroup>
+        )}
+        {contacts.length > 0 && (
+          <CommandGroup heading="Contacts">
+            {contacts.map((c) => (
+              <CommandItem
+                key={c.id}
+                onSelect={() => { router.push("/contacts"); onOpenChange(false); }}
+                className="flex items-center gap-3 py-2"
+              >
+                <UserRound className="h-4 w-4 text-slate-400 shrink-0" />
+                <div className="min-w-0 flex-1">
+                  <span className="text-sm font-medium truncate">{c.name}</span>
+                  {c.company && <span className="text-xs text-slate-400 ml-2">{c.company}</span>}
+                </div>
+                {c.faxNumber && (
+                  <span className="text-xs text-slate-400 font-mono shrink-0">{formatPhone(c.faxNumber)}</span>
+                )}
+              </CommandItem>
+            ))}
           </CommandGroup>
         )}
       </CommandList>

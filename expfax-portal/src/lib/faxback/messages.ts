@@ -66,13 +66,23 @@ export async function buildFaxImage(handle: string): Promise<Buffer> {
 }
 
 export async function sendMessage(params: SendMessageParams): Promise<string> {
+  // Per-recipient overrides: when a specific outbound DID was chosen, emit
+  // <LocalCSId> (overrides TSID seen by the remote device) and <CallerId>
+  // (overrides ANI for the call) on every recipient.
+  const fromNum = params.fromFaxNumber?.trim();
+  const overrideXml = fromNum
+    ? `
+      <LocalCSId>${escapeXml(fromNum)}</LocalCSId>
+      <CallerId>${escapeXml(fromNum)}</CallerId>`
+    : "";
+
   // Build per-recipient XML — API uses <Address> for the fax number
   const recipientXml = params.recipients
     .map(
       (r) => `    <Recipient>
       <Name>${escapeXml(r.name)}</Name>
       <Address>${escapeXml(r.faxNumber)}</Address>
-      <Prefix>${r.prefix ?? 0}</Prefix>
+      <Prefix>${r.prefix ?? 0}</Prefix>${overrideXml}
     </Recipient>`
     )
     .join("\n");
@@ -106,7 +116,7 @@ export async function sendMessage(params: SendMessageParams): Promise<string> {
     ${params.subject ? `<Subject>${escapeXml(params.subject)}</Subject>` : ""}
     ${params.senderName ? `<SenderName>${escapeXml(params.senderName)}</SenderName>` : ""}
     ${params.senderCompany ? `<SenderCompany>${escapeXml(params.senderCompany)}</SenderCompany>` : ""}
-    ${params.senderFaxNumber ? `<SenderFaxNumber>${escapeXml(params.senderFaxNumber)}</SenderFaxNumber>` : ""}
+    ${params.senderFaxNumber ? `<SenderFaxNumber>${escapeXml(params.senderFaxNumber)}</SenderFaxNumber>` : params.fromFaxNumber ? `<SenderFaxNumber>${escapeXml(params.fromFaxNumber)}</SenderFaxNumber>` : ""}
     ${params.senderVoiceNumber ? `<SenderVoiceNumber>${escapeXml(params.senderVoiceNumber)}</SenderVoiceNumber>` : ""}
     ${params.coverTemplate ? `<CoverTemplate>${escapeXml(params.coverTemplate)}</CoverTemplate>` : ""}
     ${params.billingCode ? `<MessageBillingCode>${escapeXml(params.billingCode)}</MessageBillingCode>` : ""}

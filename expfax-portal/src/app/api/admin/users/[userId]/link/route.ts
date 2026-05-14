@@ -2,7 +2,17 @@
 import { getCurrentUser } from "@/lib/auth/session";
 import { containers } from "@/lib/db/cosmos";
 import { audit } from "@/lib/audit/logger";
+import { normalizePhone } from "@/lib/phone";
 import type { FaxBackAccountLink, MfaMode, User } from "@/types";
+
+/** Normalize a fax-number field that may hold a single DID or a comma-separated
+ *  list of DIDs (multi-DID FaxBack accounts). */
+function normalizeFaxNumberField(v: string | null | undefined): string | null {
+  if (v === undefined || v === null) return null;
+  const parts = String(v).split(",").map((s) => normalizePhone(s)).filter(Boolean);
+  if (parts.length === 0) return null;
+  return parts.join(", ");
+}
 
 const VALID_MFA: MfaMode[] = ["off", "always", "new_location"];
 
@@ -65,7 +75,7 @@ export async function POST(
   if (body.faxbackAccountGuid !== undefined)
     patches.push({ op: "set", path: "/faxbackAccountGuid", value: body.faxbackAccountGuid });
   if (body.faxNumber !== undefined)
-    patches.push({ op: "set", path: "/faxNumber", value: body.faxNumber });
+    patches.push({ op: "set", path: "/faxNumber", value: normalizeFaxNumberField(body.faxNumber) });
 
   if (wantsLink) {
     patches.push({ op: "set", path: "/linkedBy", value: admin.id });
@@ -77,7 +87,7 @@ export async function POST(
         const link: FaxBackAccountLink = {
           accountGuid: body.faxbackAccountGuid,
           accountId: body.faxbackAccountId,
-          faxNumber: body.faxNumber ?? null,
+          faxNumber: normalizeFaxNumberField(body.faxNumber),
           label: null,
           addedAt: new Date().toISOString(),
           addedBy: admin.id,

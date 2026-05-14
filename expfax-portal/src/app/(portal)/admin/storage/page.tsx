@@ -5,7 +5,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { HardDrive, File, Trash2, Plus } from "lucide-react";
+import { HardDrive, File, Trash2, Plus, PlayCircle } from "lucide-react";
 
 interface StorageStats {
   received: { count: number; sizeMB: number };
@@ -24,10 +24,21 @@ interface RetentionConfig {
   overrides: Override[];
 }
 
+interface CleanupResult {
+  ranAt: string;
+  deletedFaxes: number;
+  deletedBlobs: number;
+  failedDeletes: number;
+  durationMs: number;
+  skipped?: string;
+}
+
 export default function StorageRetentionPage() {
   const [stats, setStats] = useState<StorageStats | null>(null);
   const [config, setConfig] = useState<RetentionConfig>({ globalRetentionDays: 365, overrides: [] });
   const [saving, setSaving] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [lastRun, setLastRun] = useState<CleanupResult | null>(null);
 
   const loadStats = useCallback(() => {
     fetch("/api/admin/storage").then((r) => r.json()).then(setStats);
@@ -49,6 +60,26 @@ export default function StorageRetentionPage() {
       body: JSON.stringify(config),
     });
     setSaving(false);
+  }
+
+  async function handleRunNow() {
+    if (!confirm(
+      "Run retention cleanup now?\n\nThis will permanently delete faxes (PDFs + records) older than the configured policy. This action cannot be undone."
+    )) return;
+    setRunning(true);
+    setLastRun(null);
+    try {
+      const res = await fetch("/api/admin/storage/retention/run", { method: "POST" });
+      const data = await res.json();
+      setLastRun(data);
+      // Refresh storage stats so the user sees the impact.
+      loadStats();
+    } catch (err) {
+      console.error(err);
+      alert("Cleanup failed. Check server logs.");
+    } finally {
+      setRunning(false);
+    }
   }
 
   function addOverride() {
@@ -162,6 +193,45 @@ export default function StorageRetentionPage() {
                   </Button>
                 </div>
               ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent className="p-5 space-y-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="font-medium text-sm text-slate-700">Cleanup Job</h3>
+              <p className="text-xs text-slate-500 mt-1">
+                Runs automatically once every 24 hours. You can also trigger it manually.
+              </p>
+            </div>
+            <Button variant="outline" size="sm" onClick={handleRunNow} disabled={running}>
+              <PlayCircle className="h-4 w-4 mr-1" />
+              {running ? "Running..." : "Run cleanup now"}
+            </Button>
+          </div>
+          {lastRun && (
+            <div className="text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded p-3">
+              {lastRun.skipped === "recently_ran" ? (
+                <p>Skipped — another instance ran cleanup within the last 23 hours.</p>
+              ) : lastRun.skipped === "no_config" ? (
+                <p>Skipped — no retention config saved yet.</p>
+              ) : (
+                <>
+                  <p>
+                    Ran at {new Date(lastRun.ranAt).toLocaleString()} in {(lastRun.durationMs / 1000).toFixed(1)}s.
+                  </p>
+                  <p>
+                    Deleted <strong>{lastRun.deletedFaxes}</strong> fax records and{" "}
+                    <strong>{lastRun.deletedBlobs}</strong> blob files.
+                    {lastRun.failedDeletes > 0 && (
+                      <span className="text-red-600"> {lastRun.failedDeletes} failures (see logs).</span>
+                    )}
+                  </p>
+                </>
+              )}
             </div>
           )}
         </CardContent>

@@ -11,6 +11,8 @@ interface AppConfig {
   faxbackApiUrl: string;
   faxbackUsername: string;
   faxbackPassword: string;
+  /** Email-to-fax gateway domain (e.g. "fax.yourdomain.com" — addresses look like 5551234567@fax.yourdomain.com) */
+  faxbackEmailDomain: string;
 
   // Entra ID (workforce — admin sign-in)
   entraTenantId: string;
@@ -22,6 +24,12 @@ interface AppConfig {
   externalTenantDomain: string;
   externalClientId: string;
   externalClientSecret: string;
+
+  // Multitenant /common SSO (federated sign-in with any existing Microsoft
+  // account; no shadow user is created). App reg lives in the External ID
+  // tenant but is configured as multitenant + personal MSA.
+  commonClientId: string;
+  commonClientSecret: string;
 
   // Session
   sessionSecret: string;
@@ -63,6 +71,8 @@ async function loadFromKeyVault(): Promise<Record<string, string>> {
     "external-tenant-domain",
     "external-client-id",
     "external-client-secret",
+    "common-client-id",
+    "common-client-secret",
     "session-secret",
   ];
 
@@ -98,6 +108,7 @@ export async function getConfig(): Promise<AppConfig> {
     faxbackApiUrl: get("faxback-api-url", "FAXBACK_API_URL"),
     faxbackUsername: get("faxback-username", "FAXBACK_SUPERVISOR_USERNAME"),
     faxbackPassword: get("faxback-password", "FAXBACK_SUPERVISOR_PASSWORD"),
+    faxbackEmailDomain: get("faxback-email-domain", "FAXBACK_EMAIL_DOMAIN"),
 
     entraTenantId: get("entra-tenant-id", "ENTRA_TENANT_ID"),
     entraClientId: get("entra-client-id", "ENTRA_CLIENT_ID"),
@@ -107,6 +118,9 @@ export async function getConfig(): Promise<AppConfig> {
     externalTenantDomain: get("external-tenant-domain", "EXTERNAL_TENANT_DOMAIN"),
     externalClientId: get("external-client-id", "EXTERNAL_CLIENT_ID"),
     externalClientSecret: get("external-client-secret", "EXTERNAL_CLIENT_SECRET"),
+
+    commonClientId: get("common-client-id", "COMMON_CLIENT_ID"),
+    commonClientSecret: get("common-client-secret", "COMMON_CLIENT_SECRET"),
 
     sessionSecret: get("session-secret", "SESSION_SECRET"),
 

@@ -21,6 +21,7 @@ interface Template {
 }
 
 const PLACEHOLDER_HINTS = [
+  { code: "$(Comments)", label: "Per-fax comments (filled at send)" },
   { code: "$(SenderName)", label: "Sender name" },
   { code: "$(SenderCompany)", label: "Sender company" },
   { code: "$(SenderFax)", label: "Sender fax" },
@@ -29,7 +30,6 @@ const PLACEHOLDER_HINTS = [
   { code: "$(ReceiverCompany)", label: "Recipient company" },
   { code: "$(Subject)", label: "Subject" },
   { code: "$(Date)", label: "Date" },
-  { code: "$(Comments)", label: "Cover message" },
 ];
 
 const MAX_IMAGE_KB = 512;
@@ -46,8 +46,31 @@ export default function CoverPagesPage() {
   const [headerPreview, setHeaderPreview] = useState<string>("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  const [showHints, setShowHints] = useState(false);
+  const [showHints, setShowHints] = useState(true);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const bodyRef = useRef<HTMLTextAreaElement>(null);
+
+  /** Insert a placeholder token at the current caret position (or replace the
+   *  current selection), then refocus the textarea with the caret right after
+   *  the inserted token. */
+  function insertPlaceholder(code: string) {
+    const ta = bodyRef.current;
+    const current = form.bodyText;
+    if (!ta) {
+      setForm((f) => ({ ...f, bodyText: f.bodyText + code }));
+      return;
+    }
+    const start = ta.selectionStart ?? current.length;
+    const end   = ta.selectionEnd   ?? current.length;
+    const next  = current.slice(0, start) + code + current.slice(end);
+    setForm((f) => ({ ...f, bodyText: next }));
+    // Restore focus + caret after React commits the new value.
+    requestAnimationFrame(() => {
+      ta.focus();
+      const caret = start + code.length;
+      ta.setSelectionRange(caret, caret);
+    });
+  }
 
   const load = useCallback(() => {
     fetch("/api/templates")
@@ -216,7 +239,10 @@ export default function CoverPagesPage() {
           <DialogHeader>
             <DialogTitle>{editingId ? "Edit Template" : "New Cover Page Template"}</DialogTitle>
             <DialogDescription>
-              Fill in the fields below. Use placeholder codes in the body — they are substituted with real values when you send a fax.
+              A cover page template is the fixed text that appears on every fax sent
+              with this template. Use placeholder tokens like <code className="font-mono text-blue-600">$(Comments)</code>
+              to leave a spot for per-fax text you fill in at send time. The standard
+              header (Date, To, From, Subject) is always rendered automatically.
             </DialogDescription>
           </DialogHeader>
 
@@ -285,29 +311,45 @@ export default function CoverPagesPage() {
                 </button>
               </div>
               {showHints && (
-                <div className="bg-slate-50 border rounded-md p-3 flex flex-wrap gap-2">
-                  {PLACEHOLDER_HINTS.map((h) => (
-                    <button
-                      key={h.code}
-                      type="button"
-                      title={`Insert ${h.label}`}
-                      className="font-mono text-[11px] bg-white border border-slate-200 rounded px-1.5 py-0.5 text-blue-600 hover:bg-blue-50 hover:border-blue-300 transition-colors"
-                      onClick={() => setForm((f) => ({ ...f, bodyText: f.bodyText + h.code }))}
-                    >
-                      {h.code}
-                    </button>
-                  ))}
+                <div className="bg-slate-50 border rounded-md p-3 space-y-2">
+                  <p className="text-[11px] text-slate-500 leading-snug">
+                    Click a token to insert it where your cursor is in the body.
+                    <span className="font-semibold text-slate-700"> $(Comments)</span> is
+                    replaced with the per-fax text typed in the &ldquo;Comments&rdquo; box on the Send page.
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    {PLACEHOLDER_HINTS.map((h) => {
+                      const isComments = h.code === "$(Comments)";
+                      return (
+                        <button
+                          key={h.code}
+                          type="button"
+                          title={h.label}
+                          className={
+                            "font-mono text-[11px] rounded px-1.5 py-0.5 transition-colors border " +
+                            (isComments
+                              ? "bg-amber-50 border-amber-300 text-amber-700 hover:bg-amber-100"
+                              : "bg-white border-slate-200 text-blue-600 hover:bg-blue-50 hover:border-blue-300")
+                          }
+                          onClick={() => insertPlaceholder(h.code)}
+                        >
+                          {h.code}
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
               )}
               <Textarea
-                rows={5}
+                ref={bodyRef}
+                rows={6}
                 value={form.bodyText}
                 onChange={(e) => setForm((f) => ({ ...f, bodyText: e.target.value }))}
-                placeholder={`The body message shown on the cover page.\n\nYou can use $(Comments) here to include the per-fax message entered at send time.`}
+                placeholder={`Example:\n\nPlease find the attached documents.\n\n$(Comments)\n\nRegards,\n$(SenderName)`}
                 className="font-mono text-sm"
               />
               <p className="text-[11px] text-slate-400">
-                The standard fields (Date, To, From, Subject, etc.) are always included automatically above this body.
+                Tip: type your fixed message normally, then click a token above to drop in a placeholder at your cursor.
               </p>
             </div>
 

@@ -12,4 +12,11 @@ export async function register() {
   // only loaded in the Node.js runtime.
   const { startQueuePollers } = await import("@/lib/services/queue-poller");
   startQueuePollers();
+
+  // Daily retention cleanup — deletes blobs + Cosmos rows for faxes
+  // older than the admin-configured per-user / global retention policy.
+  const { startRetentionScheduler } = await import(
+    "@/lib/services/retention-cleanup"
+  );
+  startRetentionScheduler();
 }

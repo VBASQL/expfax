@@ -137,6 +137,18 @@ export async function revokeInvitation(id: string): Promise<Invitation | null> {
 }
 
 /**
+ * Permanently delete an invitation record. Intended for revoked/expired invitations.
+ * Returns false if not found.
+ */
+export async function hardDeleteInvitation(id: string): Promise<boolean> {
+  const container = await containers.invitations();
+  const inv = await getInvitation(id);
+  if (!inv) return false;
+  await container.item(id, id).delete();
+  return true;
+}
+
+/**
  * Mark invitation completed. Called after successful signup creates the User doc.
  */
 export async function completeInvitation(id: string): Promise<void> {

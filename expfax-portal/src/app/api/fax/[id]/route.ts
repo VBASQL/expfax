@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth/session";
 import { containers } from "@/lib/db/cosmos";
 import { getFaxWithAccess } from "@/lib/db/fax-access";
+import { audit } from "@/lib/audit/logger";
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const user = await getCurrentUser();
@@ -43,7 +44,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   return NextResponse.json({ success: true });
 }
 
-export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+export async function DELETE(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
@@ -56,6 +57,7 @@ export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ 
     { op: "set", path: "/isDeleted", value: true },
     { op: "set", path: "/updatedAt", value: new Date().toISOString() },
   ]);
+  await audit({ userId: user.id, action: "fax.delete", resourceType: "fax", resourceId: id, request: req });
 
   return NextResponse.json({ success: true });
 }

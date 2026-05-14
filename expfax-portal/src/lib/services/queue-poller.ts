@@ -48,7 +48,7 @@ async function processQueueEntry(
   // Check if message already exists
   const { resources: existing } = await faxContainer.items
     .query({
-      query: "SELECT c.id, c.userId, c.status, c.statusNum, c.faxImagePath, c.sentDocumentPaths FROM c WHERE c.messageHandle = @handle",
+      query: "SELECT c.id, c.userId, c.status, c.statusNum, c.faxImagePath, c.sentDocumentPaths, c.senderFaxNumber FROM c WHERE c.messageHandle = @handle",
       parameters: [{ name: "@handle", value: handle }],
     })
     .fetchAll();
@@ -66,7 +66,39 @@ async function processQueueEntry(
       );
     }
 
-    // Fax just finished — update recipients/documents with final page counts and download PDF
+    // Backfill sender number for received faxes when missing. FaxBack returns
+    // CallerId on the recipient (not SenderFaxNumber) for inbound calls.
+    if (direction === "received" && !doc.senderFaxNumber) {
+      const rawRec = (detail as Record<string, unknown>).Recipient ?? (detail as Record<string, unknown>).Recipients;
+      const firstRec = (Array.isArray(rawRec) ? rawRec[0] : rawRec) as Record<string, string> | undefined;
+      const detailRec = detail as Record<string, string>;
+      const sender =
+        detailRec.SenderFaxNumber ||
+        firstRec?.CallerId || firstRec?.CallerID ||
+        firstRec?.RemoteCSId || firstRec?.RemoteCSID ||
+        "";
+      if (sender) {
+        patches.push({ op: "set", path: "/senderFaxNumber", value: sender });
+      }
+    }
+
+    // Download the rendered PDF on first sight — FaxBack rasterizes the content
+    // before placing the call, so BuildFaxImage works while still in Sending
+    // (queue 3). Skip only for terminal-failed faxes, which have no image.
+    const isFailedFinal = (queue === 4 || queue === 5) && statusNum !== 0;
+    let haveImage = !!doc.faxImagePath;
+    if (!haveImage && !isFailedFinal) {
+      try {
+        const pdfBuffer = await buildFaxImage(handle);
+        const faxImagePath = await uploadFaxPdf("sent", doc.userId, doc.id, pdfBuffer);
+        patches.push({ op: "set", path: "/faxImagePath", value: faxImagePath });
+        haveImage = true;
+      } catch (err) {
+        console.error(`Failed to download rendered PDF for sent fax ${handle}:`, err);
+      }
+    }
+
+    // Fax just finished — update recipients/documents with final page counts and clean up
     if (queue === 4 || queue === 5) {
       // Update recipients with final pageCount / totalSeconds from ReadMessageBlock response
       const rawRecipients = (detail as Record<string, unknown>).Recipient ?? detail.Recipients;
@@ -89,8 +121,9 @@ async function processQueueEntry(
         pagesTransferred: Number(r.PagesTransferred) || 0,
         connectBps: Number(r.ConnectBPS) || 0,
         retries: Number(r.Retries) || 0,
-        localCsid: r.LocalCSID || "",
-        remoteCsid: r.RemoteCSID || "",
+        localCsid: r.LocalCSID || r.LocalCSId || "",
+        remoteCsid: r.RemoteCSID || r.RemoteCSId || "",
+        callerID: r.CallerID || r.CallerId || "",
       }));
       if (updatedRecipients.length > 0) {
         patches.push({ op: "set", path: "/recipients", value: updatedRecipients });
@@ -110,33 +143,20 @@ async function processQueueEntry(
         patches.push({ op: "set", path: "/documents", value: updatedDocuments });
       }
 
-      // Download the rendered PDF for successful sends only — failed faxes have no image.
-      // For failed faxes (statusNum !== 0) we still delete from FaxBack to clear the queue.
-      if (!doc.faxImagePath && statusNum === 0) {
-        try {
-          const pdfBuffer = await buildFaxImage(handle);
-          const faxImagePath = await uploadFaxPdf("sent", doc.userId, doc.id, pdfBuffer);
-          patches.push({ op: "set", path: "/faxImagePath", value: faxImagePath });
+      // Clean up the temporary sent-documents blobs once we have the rendered PDF
+      if (haveImage && Array.isArray(doc.sentDocumentPaths) && doc.sentDocumentPaths.length > 0) {
+        deleteBlobsByPaths(doc.sentDocumentPaths).catch((err) =>
+          console.error(`Failed to delete temp sent-documents for ${doc.id}:`, err)
+        );
+        patches.push({ op: "set", path: "/sentDocumentPaths", value: [] });
+      }
 
-          // Clean up the temporary sent-documents blobs
-          if (Array.isArray(doc.sentDocumentPaths) && doc.sentDocumentPaths.length > 0) {
-            deleteBlobsByPaths(doc.sentDocumentPaths).catch((err) =>
-              console.error(`Failed to delete temp sent-documents for ${doc.id}:`, err)
-            );
-            patches.push({ op: "set", path: "/sentDocumentPaths", value: [] });
-          }
-
-          // Delete from FaxBack now that we have the PDF
-          deleteMessage(handle).catch((err) =>
-            console.error(`Failed to delete FaxBack message ${handle}:`, err)
-          );
-        } catch (err) {
-          console.error(`Failed to download rendered PDF for sent fax ${handle}:`, err);
-        }
-      } else if (statusNum !== 0 && !doc.faxImagePath) {
-        // Failed fax: no PDF to download; delete from FaxBack to clear the Sent queue
+      // Delete from FaxBack now that send is final — but only if we have the PDF
+      // (or it failed and has none). If the PDF fetch failed, leave it on the
+      // server so the next poll can retry.
+      if (haveImage || isFailedFinal) {
         deleteMessage(handle).catch((err) =>
-          console.error(`Failed to delete failed FaxBack message ${handle}:`, err)
+          console.error(`Failed to delete FaxBack message ${handle}:`, err)
         );
       }
     }
@@ -212,9 +232,17 @@ async function processQueueEntry(
       pagesTransferred: Number(r.PagesTransferred) || 0,
       connectBps: Number(r.ConnectBPS) || 0,
       retries: Number(r.Retries) || 0,
-      localCsid: r.LocalCSID || "",
-      remoteCsid: r.RemoteCSID || "",
+      localCsid: r.LocalCSID || r.LocalCSId || "",
+      remoteCsid: r.RemoteCSID || r.RemoteCSId || "",
+      callerID: r.CallerID || r.CallerId || r.CallerNumber || r.ANI || "",
     }));
+
+  // Diagnostic: if we couldn't extract a sender number for a received fax,
+  // dump the raw recipient so we can see which field FaxBack actually used.
+  if (direction === "received" && !detail.SenderFaxNumber && !recipients[0]?.callerID && !recipients[0]?.remoteCsid) {
+    const firstRaw = Array.isArray(rawRecipients) ? rawRecipients[0] : rawRecipients;
+    console.warn(`[queue-poller] Received fax ${handle} has no sender number. Raw recipient:`, JSON.stringify(firstRaw));
+  }
 
   // Map documents — API returns "Document" (singular), may be object or array
   const rawDocuments = (detail as Record<string, unknown>).Document ?? detail.Documents;
@@ -244,8 +272,9 @@ async function processQueueEntry(
     senderName: detail.SenderName || "",
     senderCompany: detail.SenderCompany || "",
     // For received faxes, SenderFaxNumber may be empty if the remote machine didn't
-    // provide a CallerID; fall back to the RemoteCSID transmitted by the sender.
-    senderFaxNumber: detail.SenderFaxNumber || (direction === "received" ? recipients[0]?.remoteCsid || "" : ""),
+    // provide one; fall back to CallerID (ANI from the phone network) then RemoteCSID
+    // (CSID string transmitted by the sender's fax machine).
+    senderFaxNumber: detail.SenderFaxNumber || (direction === "received" ? recipients[0]?.callerID || recipients[0]?.remoteCsid || "" : ""),
     coverTemplate: detail.CoverTemplate || "",
     appInfo: detail.AppInfo || "",
     billingCode: detail.BillingCode || "",

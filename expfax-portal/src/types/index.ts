@@ -26,7 +26,8 @@ export interface FaxBackAccountLink {
 
 export interface User {
   id: string;                    // PK + partition key
-  entraId: string;               // Entra ID object ID (oid claim)
+  entraId: string;               // Entra ID object ID (oid claim) — unique within entraTenantId
+  entraTenantId?: string | null; // Entra tenant id (tid claim). Required for federated /common SSO users to disambiguate oid collisions across tenants. Null/missing = legacy single-tenant user.
   email: string;
   displayName: string;
   authType: AuthType;            // How user authenticates
@@ -50,6 +51,10 @@ export interface User {
     defaultCoverTemplate: string | null;
     itemsPerPage: number;
     timezone: string;
+    /** Per-fax-number sender defaults shown on the cover page */
+    numberProfiles?: Record<string, { senderName: string; senderCompany: string }>;
+    /** Per-FaxBack-account notification overrides (keyed by accountGuid). Falls back to top-level values. */
+    notificationsByNumber?: Record<string, { notifyOnReceive: boolean; notifyOnSendComplete: boolean }>;
   };
   createdAt: string;             // ISO 8601
   updatedAt: string;
@@ -132,6 +137,7 @@ export interface FaxRecipient {
   retries: number;
   localCsid: string;
   remoteCsid: string;
+  callerID: string;
 }
 
 export interface FaxDocument {

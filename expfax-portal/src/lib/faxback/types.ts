@@ -81,6 +81,9 @@ export interface SendMessageParams {
   billingCode?: string;
   resolution?: number;
   scheduleTime?: string;
+  /** Optional outbound DID. When set, emitted as <LocalCSId> + <CallerId> on every recipient
+   *  so the receiving fax sees this number as the sender (TSID/ANI). */
+  fromFaxNumber?: string;
   recipients: { name: string; faxNumber: string; prefix?: number }[];
   documents: { name: string; contentBase64: string; documentType?: number }[];
 }

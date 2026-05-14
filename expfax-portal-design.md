@@ -863,3 +863,6 @@ NODE_ENV=production
 6. **Existing admin portal** — Does the FaxAdmin portal at expfax.com remain in use for account management, or should admin functions move into the new portal over time?
 7. **SIP/trunk configuration** — Is there a Port Server component involved, or is fax delivery handled entirely by the NSX server?
 8. **Branding** — Custom branding per client company, or single ExpFax brand?
+
+
+

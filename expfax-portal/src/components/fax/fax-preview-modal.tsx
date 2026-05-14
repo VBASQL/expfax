@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { FileText, Image as ImageIcon, File, Loader2 } from "lucide-react";
-import { generateCoverHtml } from "@/lib/covers/html-generator";
+import { generateCoverHtml, substitutePlaceholders } from "@/lib/covers/html-generator";
 import mammoth from "mammoth";
 
 export interface CoverPreviewInfo {
@@ -18,6 +18,12 @@ export interface CoverPreviewInfo {
   receiverCompany?: string;
   subject?: string;
   message?: string;
+  /** When a template is selected, its FIXED body text. $(Comments) and other
+   *  $(Token) placeholders inside it are filled from the form fields + message. */
+  templateBodyText?: string;
+  /** Optional letterhead/logo from the saved template (preview only). */
+  headerImageBase64?: string;
+  headerImageType?: "png" | "jpeg";
 }
 
 interface FaxPreviewModalProps {
@@ -25,10 +31,31 @@ interface FaxPreviewModalProps {
   onClose: () => void;
   files: File[];
   cover?: CoverPreviewInfo;
+  /**
+   * FaxBack resolution code: 0 = Standard (200×100), 2 = Fine (200×200),
+   * 3 = Superfine (200×400). Used to degrade image previews so users see
+   * approximately what the receiving machine will print.
+   */
+  resolution?: number;
 }
 
 /** Renders the cover page inside an iframe using the same HTML bytes sent to FaxBack. */
-function CoverPreview({ info, pageNum }: { info: CoverPreviewInfo; pageNum: number }) {
+function CoverPreview({ info, pageNum, resolution }: { info: CoverPreviewInfo; pageNum: number; resolution: number }) {
+  // Letter paper at 96 DPI; same approach as FilePreview.
+  const PAPER_W = 816;
+  const PAPER_H = 1056;
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const [scale, setScale] = useState(1);
+  useEffect(() => {
+    if (!wrapRef.current) return;
+    const ro = new ResizeObserver((entries) => {
+      const w = entries[0]?.contentRect.width ?? 0;
+      if (w > 0) setScale(w / PAPER_W);
+    });
+    ro.observe(wrapRef.current);
+    return () => ro.disconnect();
+  }, []);
+
   if (info.mode === "saved") {
     return (
       <div className="mb-6">
@@ -53,7 +80,7 @@ function CoverPreview({ info, pageNum }: { info: CoverPreviewInfo; pageNum: numb
     );
   }
 
-  const html = generateCoverHtml({
+  const fields = {
     senderName:      info.senderName      ?? "",
     senderCompany:   info.senderCompany   ?? "",
     senderFax:       info.senderFax       ?? "",
@@ -61,7 +88,19 @@ function CoverPreview({ info, pageNum }: { info: CoverPreviewInfo; pageNum: numb
     receiverName:    info.receiverName    ?? "",
     receiverCompany: info.receiverCompany ?? "",
     subject:         info.subject         ?? "",
-    message:         info.message         ?? "",
+  };
+  const comments = info.message ?? "";
+  // Match server: when a template is selected, render its fixed body with
+  // placeholders substituted; otherwise the comments textbox IS the body.
+  const messageBody = info.templateBodyText
+    ? substitutePlaceholders(info.templateBodyText, { ...fields, comments })
+    : comments;
+
+  const html = generateCoverHtml({
+    ...fields,
+    message: messageBody,
+    headerImageBase64: info.headerImageBase64,
+    headerImageType:   info.headerImageType,
   });
 
   return (
@@ -73,15 +112,17 @@ function CoverPreview({ info, pageNum }: { info: CoverPreviewInfo; pageNum: numb
           exact bytes sent
         </span>
       </div>
-      <div className="rounded-lg border border-slate-200 overflow-hidden bg-[#c8c8c8]" style={{ padding: "14px 10px" }}>
-        <div style={{ background: "#fff", boxShadow: "0 2px 10px rgba(0,0,0,0.22)", margin: "0 auto", aspectRatio: "8.5 / 11", overflow: "hidden" }}>
-          <iframe
-            srcDoc={html}
-            title="Cover Page preview"
-            sandbox="allow-scripts allow-same-origin"
-            scrolling="no"
-            style={{ width: "100%", height: "100%", border: "none", display: "block", filter: "grayscale(100%)" }}
-          />
+      <div ref={wrapRef} className="rounded-lg border border-slate-200 overflow-hidden bg-[#c8c8c8]" style={{ padding: "14px 10px" }}>
+        <div style={{ background: "#fff", boxShadow: "0 2px 10px rgba(0,0,0,0.22)", margin: "0 auto", width: "100%", height: PAPER_H * scale, position: "relative", overflow: "hidden" }}>
+          <div style={{ position: "absolute", top: 0, left: 0, width: PAPER_W, height: PAPER_H, transform: `scale(${scale})`, transformOrigin: "top left", filter: "grayscale(100%)" }}>
+            <iframe
+              srcDoc={html}
+              title="Cover Page preview"
+              sandbox=""
+              scrolling="no"
+              style={{ width: PAPER_W, height: PAPER_H, border: "none", display: "block" }}
+            />
+          </div>
         </div>
       </div>
     </div>
@@ -96,7 +137,7 @@ function CoverPreview({ info, pageNum }: { info: CoverPreviewInfo; pageNum: numb
  * PDFs:   returned as-is (browser iframe)
  * Others: "unsupported" placeholder
  */
-function FilePreview({ file, index }: { file: File; index: number }) {
+function FilePreview({ file, index, resolution }: { file: File; index: number; resolution: number }) {
   const [state, setState] = useState<"loading" | "image" | "pdf" | "html" | "txt" | "docx" | "doc" | "unsupported" | "too_large" | "error">("loading");
   const [dataUrl, setDataUrl] = useState<string>();
   const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
@@ -147,22 +188,103 @@ function FilePreview({ file, index }: { file: File; index: number }) {
         const res = await fetch("/api/fax/preview-document", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name: file.name, contentBase64 }),
+          body: JSON.stringify({ name: file.name, contentBase64, resolution }),
         });
 
         if (!res.ok) { setState("error"); return; }
 
         const json: { type: string; dataUrl: string | null } = await res.json();
+
+        // PDFs: convert the server-returned data URL into a blob: URL.
+        // Chrome's PDF viewer in iframes is unreliable with large data:
+        // URLs (silently renders blank, no console error). blob: URLs
+        // work consistently. The bytes are identical — just wrapped.
+        if (json.type === "pdf" && json.dataUrl) {
+          const base64 = json.dataUrl.split(",")[1] ?? "";
+          const binary = atob(base64);
+          const bytes = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+          const blobUrl = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
+          setDataUrl(blobUrl);
+          setState("pdf");
+          return;
+        }
+
         setDataUrl(json.dataUrl ?? undefined);
         setState(json.type as typeof state);
       } catch {
         setState("error");
       }
     })();
+
+    // Revoke any blob: URL we created when this preview unmounts
+    return () => {
+      if (dataUrl?.startsWith("blob:")) URL.revokeObjectURL(dataUrl);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [file]);
 
   const badge = (label: string, cls: string) => (
     <span className={`ml-auto text-[10px] border rounded px-1.5 py-0.5 shrink-0 ${cls}`}>{label}</span>
+  );
+
+  // Non-image previews (PDF/HTML/DOCX/TXT) render inside their own iframe
+  // viewport, so we can only apply visual effects at the iframe level — that
+  // doesn't faithfully simulate Standard-resolution degradation. We just show
+  // grayscale for the fax-machine look; resolution-specific degradation is
+  // applied server-side at pixel level for raster images only.
+  const stdFilter = "grayscale(100%)";
+
+  // Letter paper at 96 DPI = 816×1056 px. Rendering each preview at this
+  // native size and scaling via CSS transform keeps the doc visually at real
+  // 8.5×11" proportions regardless of modal column width.
+  const PAPER_W = 816;
+  const PAPER_H = 1056;
+
+  // Track wrapper width to compute the transform scale dynamically.
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const [scale, setScale] = useState(1);
+  useEffect(() => {
+    if (!wrapRef.current) return;
+    const ro = new ResizeObserver((entries) => {
+      const w = entries[0]?.contentRect.width ?? 0;
+      if (w > 0) setScale(w / PAPER_W);
+    });
+    ro.observe(wrapRef.current);
+    return () => ro.disconnect();
+  }, [state]);
+
+  /** Renders children inside a scaled letter-paper box so the SVG blur and
+   *  on-screen size match real 8.5×11" output. */
+  const PaperBox = ({ children }: { children: React.ReactNode }) => (
+    <div ref={wrapRef} className="w-full bg-[#c8c8c8]" style={{ padding: "14px 10px" }}>
+      <div
+        style={{
+          width: "100%",
+          height: PAPER_H * scale,
+          position: "relative",
+          margin: "0 auto",
+          boxShadow: "0 2px 10px rgba(0,0,0,0.22)",
+          overflow: "hidden",
+          background: "#fff",
+        }}
+      >
+        <div
+          style={{
+            position: "absolute",
+            top: 0,
+            left: 0,
+            width: PAPER_W,
+            height: PAPER_H,
+            transform: `scale(${scale})`,
+            transformOrigin: "top left",
+            filter: stdFilter,
+          }}
+        >
+          {children}
+        </div>
+      </div>
+    </div>
   );
 
   return (
@@ -208,23 +330,27 @@ function FilePreview({ file, index }: { file: File; index: number }) {
         )}
 
         {state === "pdf" && dataUrl && (
-          <iframe
-            src={dataUrl}
-            title={file.name}
-            className="w-full"
-            style={{ height: "70vh", border: "none", filter: "grayscale(100%)" }}
-          />
+          <div className="w-full bg-[#c8c8c8]" style={{ padding: "14px 10px" }}>
+            <div style={{ background: "#fff", boxShadow: "0 2px 10px rgba(0,0,0,0.22)", margin: "0 auto", aspectRatio: "8.5 / 11", overflow: "hidden" }}>
+              <iframe
+                src={`${dataUrl}#view=FitH&zoom=page-width`}
+                title={file.name}
+                style={{ width: "100%", height: "100%", border: "none", display: "block", filter: "grayscale(100%)" }}
+              />
+            </div>
+          </div>
         )}
 
         {state === "html" && dataUrl && (
           <>
-            <iframe
-              srcDoc={dataUrl}
-              title={file.name}
-              sandbox="allow-same-origin"
-              className="w-full"
-              style={{ height: "70vh", border: "none", filter: "grayscale(100%)" }}
-            />
+            <PaperBox>
+              <iframe
+                srcDoc={dataUrl}
+                title={file.name}
+                sandbox=""
+                style={{ width: PAPER_W, height: PAPER_H, border: "none" }}
+              />
+            </PaperBox>
             <div className="px-3 py-2 bg-amber-50 border-t border-amber-200 text-[11px] text-amber-800 space-y-0.5">
               <p className="font-semibold">HTML preview limitations — the fax may differ:</p>
               <ul className="list-disc list-inside space-y-0.5">
@@ -239,20 +365,23 @@ function FilePreview({ file, index }: { file: File; index: number }) {
         )}
 
         {state === "txt" && dataUrl && (
-          <pre className="w-full p-4 text-xs text-slate-700 whitespace-pre-wrap break-words overflow-auto" style={{ maxHeight: "70vh", filter: "grayscale(100%)" }}>
-            {dataUrl}
-          </pre>
+          <PaperBox>
+            <pre style={{ width: PAPER_W, height: PAPER_H, margin: 0, padding: "1in", fontSize: "11pt", color: "#000", whiteSpace: "pre-wrap", wordBreak: "break-word", overflow: "auto", boxSizing: "border-box", background: "#fff" }}>
+              {dataUrl}
+            </pre>
+          </PaperBox>
         )}
 
         {state === "docx" && dataUrl && (
           <>
-            <iframe
-              srcDoc={`<!DOCTYPE html><html><head><meta charset="UTF-8"><style>body{font-family:Arial,sans-serif;font-size:11pt;margin:1in;color:#000}img{max-width:100%}</style></head><body>${dataUrl}</body></html>`}
-              title={file.name}
-              sandbox="allow-same-origin"
-              className="w-full"
-              style={{ height: "70vh", border: "none", filter: "grayscale(100%)" }}
-            />
+            <PaperBox>
+              <iframe
+                srcDoc={`<!DOCTYPE html><html><head><meta charset="UTF-8"><style>body{font-family:Arial,sans-serif;font-size:11pt;margin:1in;color:#000}img{max-width:100%}</style></head><body>${dataUrl}</body></html>`}
+                title={file.name}
+                sandbox=""
+                style={{ width: PAPER_W, height: PAPER_H, border: "none" }}
+              />
+            </PaperBox>
             <div className="px-3 py-2 bg-amber-50 border-t border-amber-200 text-[11px] text-amber-800 space-y-0.5">
               <p className="font-semibold">Approximate preview — the fax may differ:</p>
               <ul className="list-disc list-inside space-y-0.5">
@@ -307,16 +436,40 @@ function FilePreview({ file, index }: { file: File; index: number }) {
   );
 }
 
-export function FaxPreviewModal({ open, onClose, files, cover }: FaxPreviewModalProps) {
+export function FaxPreviewModal({ open, onClose, files, cover, resolution = 2 }: FaxPreviewModalProps) {
   const totalPages = (cover ? 1 : 0) + files.length;
   return (
     <Dialog open={open} onOpenChange={(v) => { if (!v) onClose(); }}>
-      <DialogContent className="max-w-2xl w-full p-0 gap-0">
+      <DialogContent
+        className="sm:max-w-[35vw] w-full p-0 gap-0"
+        // Tell browser extensions (Grammarly etc.) to skip this subtree.
+        // Grammarly attaches `unload` listeners that violate Permissions-Policy
+        // and produce console noise on every React unmount inside the modal.
+        data-gramm="false"
+        data-gramm_editor="false"
+        data-enable-grammarly="false"
+      >
         <DialogHeader className="px-6 pt-6 pb-4 border-b border-slate-100">
-          <DialogTitle className="text-base font-semibold">
+          <DialogTitle className="text-base font-semibold flex items-center gap-2 flex-wrap">
             Fax Preview
-            <span className="ml-2 text-sm font-normal text-slate-400">
+            <span className="text-sm font-normal text-slate-400">
               {totalPages} page{totalPages !== 1 ? "s" : ""} · sent in this order
+            </span>
+            <span
+              className={`ml-auto text-[10px] border rounded px-1.5 py-0.5 shrink-0 ${
+                resolution === 0
+                  ? "bg-amber-50 text-amber-700 border-amber-200"
+                  : resolution === 3
+                    ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                    : "bg-blue-50 text-blue-700 border-blue-200"
+              }`}
+              title="Resolution affects the receiving fax machine's vertical print density"
+            >
+              {resolution === 0
+                ? "Standard (200×100 DPI)"
+                : resolution === 3
+                  ? "Superfine (200×400 DPI)"
+                  : "Fine (200×200 DPI)"}
             </span>
           </DialogTitle>
         </DialogHeader>
@@ -327,10 +480,10 @@ export function FaxPreviewModal({ open, onClose, files, cover }: FaxPreviewModal
             <p className="text-sm">No attachments or cover page added yet.</p>
           </div>
         ) : (
-          <ScrollArea className="max-h-[80vh] px-6 py-5">
+          <ScrollArea className="max-h-[88vh] px-6 py-5">
             {cover && <CoverPreview info={cover} pageNum={1} />}
             {files.map((file, i) => (
-              <FilePreview key={i} file={file} index={cover ? i + 1 : i} />
+              <FilePreview key={i} file={file} index={cover ? i + 1 : i} resolution={resolution} />
             ))}
           </ScrollArea>
         )}

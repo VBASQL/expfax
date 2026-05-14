@@ -9,18 +9,27 @@ interface FaxBackSessionState {
 let sessionState: FaxBackSessionState | null = null;
 let loginPromise: Promise<string> | null = null;
 
+function xmlEscape(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
 async function login(): Promise<string> {
   const config = await getConfig();
 
-  const basic = Buffer.from(`${config.faxbackUsername}:${config.faxbackPassword}`).toString("base64");
-
   const url = `${config.faxbackApiUrl}/nsx/Login`;
+  const body =
+    `<NSX><Credentials>` +
+    `<UserName>${xmlEscape(config.faxbackUsername)}</UserName>` +
+    `<Password>${xmlEscape(config.faxbackPassword)}</Password>` +
+    `</Credentials></NSX>`;
+
   const res = await fetch(url, {
-    method: "GET",
+    method: "POST",
     headers: {
-      Authorization: `Basic ${basic}`,
+      "Content-Type": "application/xml",
       Accept: "application/json",
     },
+    body,
   });
 
   if (!res.ok) {
@@ -30,14 +39,16 @@ async function login(): Promise<string> {
 
   const text = await res.text();
 
-  // NSX REST returns: { "NSX": { "LoginId": "..." } }
+  // NSX REST returns either JSON { "NSX": { "LoginId": "..." } } or XML <NSX><LoginId>...</LoginId></NSX>
   try {
     const json = JSON.parse(text);
     const id = json?.NSX?.LoginId ?? json?.LoginId;
     if (typeof id === "string" && id.length > 0) return id;
   } catch {
-    // fall through
+    // Not JSON — try XML
   }
+  const m = text.match(/<LoginId>\s*([^<\s]+)\s*<\/LoginId>/i);
+  if (m && m[1]) return m[1];
 
   throw new Error(`FaxBack Login response missing LoginId: ${text.slice(0, 300)}`);
 }

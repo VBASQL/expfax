@@ -1,9 +1,8 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { Bell, Inbox, CheckCircle, XCircle } from "lucide-react";
+import { Bell, Inbox, CheckCircle, XCircle, X } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import Link from "next/link";
 
 interface Notification {
@@ -54,10 +53,26 @@ export function NotificationBell() {
     return () => clearInterval(interval);
   }, [fetchNotifications]);
 
-  async function handleMarkAllRead() {
+  async function handleDismissAll() {
     await fetch("/api/notifications/read", { method: "POST" });
+    setNotifications([]);
     setUnreadCount(0);
-    fetchNotifications();
+  }
+
+  async function handleDismissOne(id: string, type: Notification["type"], e: React.MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    // Optimistic remove
+    setNotifications((prev) => prev.filter((n) => n.id !== id));
+    if (type === "received") {
+      setUnreadCount((c) => Math.max(0, c - 1));
+    }
+    try {
+      await fetch(`/api/notifications/${encodeURIComponent(id)}/dismiss`, { method: "POST" });
+    } catch {
+      // re-fetch on failure to restore truth
+      fetchNotifications();
+    }
   }
 
   return (
@@ -73,35 +88,47 @@ export function NotificationBell() {
       <PopoverContent className="w-80 p-0" align="end">
         <div className="flex items-center justify-between px-4 py-3 border-b">
           <p className="text-sm font-semibold">Notifications</p>
-          {unreadCount > 0 && (
-            <button onClick={handleMarkAllRead} className="text-xs text-blue-600 hover:underline">
-              Mark all read
+          {notifications.length > 0 && (
+            <button onClick={handleDismissAll} className="text-xs text-blue-600 hover:underline">
+              Dismiss all
             </button>
           )}
         </div>
-        <ScrollArea className="max-h-[320px]">
+        <div className="max-h-[400px] overflow-y-auto overscroll-contain">
           {notifications.length === 0 ? (
             <div className="py-8 text-center text-sm text-slate-400">No new notifications</div>
           ) : (
             <div className="divide-y">
               {notifications.map((n) => (
-                <Link
+                <div
                   key={n.id}
-                  href={n.href}
-                  onClick={() => setOpen(false)}
-                  className="flex items-start gap-3 px-4 py-3 hover:bg-slate-50 transition-colors"
+                  className="group relative flex items-start gap-3 px-4 py-3 hover:bg-slate-50 transition-colors"
                 >
-                  <div className="mt-0.5 shrink-0">{icons[n.type]}</div>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-medium text-slate-800 truncate">{n.message}</p>
-                    {n.detail && <p className="text-xs text-slate-400 truncate">{n.detail}</p>}
-                    <p className="text-[10px] text-slate-400 mt-0.5">{timeAgo(n.time)}</p>
-                  </div>
-                </Link>
+                  <Link
+                    href={n.href}
+                    onClick={() => setOpen(false)}
+                    className="flex flex-1 min-w-0 items-start gap-3 pr-6"
+                  >
+                    <div className="mt-0.5 shrink-0">{icons[n.type]}</div>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-medium text-slate-800 break-words">{n.message}</p>
+                      {n.detail && <p className="text-xs text-slate-400 break-words line-clamp-2">{n.detail}</p>}
+                      <p className="text-[10px] text-slate-400 mt-0.5">{timeAgo(n.time)}</p>
+                    </div>
+                  </Link>
+                  <button
+                    type="button"
+                    aria-label="Dismiss notification"
+                    onClick={(e) => handleDismissOne(n.id, n.type, e)}
+                    className="absolute top-2 right-2 inline-flex h-6 w-6 items-center justify-center rounded text-slate-400 opacity-0 transition-opacity hover:bg-slate-200 hover:text-slate-700 group-hover:opacity-100 focus:opacity-100"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
               ))}
             </div>
           )}
-        </ScrollArea>
+        </div>
       </PopoverContent>
     </Popover>
   );

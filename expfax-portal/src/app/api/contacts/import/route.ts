@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth/session";
 import { containers } from "@/lib/db/cosmos";
 import { v4 as uuid } from "uuid";
+import { normalizePhone } from "@/lib/phone";
 import type { Contact } from "@/types";
 
 function parseCSVLine(line: string): string[] {
@@ -60,7 +61,7 @@ export async function POST(request: NextRequest) {
       id: uuid(),
       userId: user.id,
       name: name || faxNumber,
-      faxNumber,
+      faxNumber: normalizePhone(faxNumber),
       company,
       email,
       notes,

@@ -103,6 +103,12 @@ export default function AdminInvitationsPage() {
     load();
   }
 
+  async function handleDeleteInvitation(id: string) {
+    if (!confirm("Permanently delete this invitation record? This cannot be undone.")) return;
+    await fetch(`/api/admin/invitations/${id}?permanent=1`, { method: "DELETE" });
+    load();
+  }
+
   async function handleResend(id: string) {
     if (!confirm("Resend this invitation? A new link will be generated and the old one will stop working.")) return;
     const res = await fetch(`/api/admin/invitations/${id}/resend`, { method: "POST" });
@@ -193,6 +199,17 @@ export default function AdminInvitationsPage() {
                       {inv.status === "pending" && (
                         <Button variant="ghost" size="sm" onClick={() => handleRevoke(inv.id)}>
                           <Trash2 className="h-4 w-4 mr-1" /> Revoke
+                        </Button>
+                      )}
+                      {(inv.status === "revoked" || inv.status === "expired") && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="text-red-500 hover:text-red-700"
+                          onClick={() => handleDeleteInvitation(inv.id)}
+                          title="Permanently delete"
+                        >
+                          <Trash2 className="h-4 w-4 mr-1" /> Delete
                         </Button>
                       )}
                     </div>

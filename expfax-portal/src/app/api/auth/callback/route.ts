@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getEntraClient, getExternalEntraClient, findUserByEntraId, hasArmRoleOnAppResources } from "@/lib/auth/entra";
+import { getEntraClient, getExternalEntraClient, getCommonEntraClient, findUserByEntraId, hasArmRoleOnAppResources } from "@/lib/auth/entra";
 import { createSession, SESSION_COOKIE_NAME, SESSION_COOKIE_OPTIONS } from "@/lib/auth/session";
 import { getConfig } from "@/lib/config";
 import { getInvitation } from "@/lib/auth/invitations";
@@ -23,7 +23,9 @@ export async function GET(request: NextRequest) {
 
   try {
     // Choose client based on which flow started the round-trip.
-    const entra = tenantKind === "external" || signupInvitationId
+    const entra = tenantKind === "common"
+      ? await getCommonEntraClient()
+      : tenantKind === "external" || signupInvitationId
       ? await getExternalEntraClient()
       : await getEntraClient();
     const codeVerifier = request.cookies.get("entra_code_verifier")?.value ?? "";
@@ -36,6 +38,7 @@ export async function GET(request: NextRequest) {
     );
 
     const entraId = payload.oid || payload.sub;
+    const entraTenantId: string | null = payload.tid ?? null;
     const claimedEmail =
       payload.preferred_username || payload.email || payload.upn || "";
     const claimedName = payload.name || claimedEmail.split("@")[0] || "User";
@@ -66,6 +69,7 @@ export async function GET(request: NextRequest) {
       const user = await createUserFromSignup({
         invitation,
         entraId,
+        entraTenantId,
         email: invitation.email,
         displayName: claimedName,
         authType: "microsoft",
@@ -98,7 +102,7 @@ export async function GET(request: NextRequest) {
       ? await hasArmRoleOnAppResources(entraId)
       : false;
 
-    let user = await findUserByEntraId(entraId);
+    let user = await findUserByEntraId(entraId, entraTenantId);
 
     if (!user && isPrivilegedWorkforceUser) {
       // First time this privileged workforce user logs in — provision as admin.
@@ -106,6 +110,7 @@ export async function GET(request: NextRequest) {
       const newUser: User = {
         id: uuid(),
         entraId,
+        entraTenantId,
         email: claimedEmail,
         displayName: claimedName,
         role: "user",

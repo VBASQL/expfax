@@ -2,7 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth/session";
 import { containers } from "@/lib/db/cosmos";
 import { v4 as uuid } from "uuid";
+import { normalizePhone } from "@/lib/phone";
 import type { Contact } from "@/types";
+import { audit } from "@/lib/audit/logger";
 
 export async function GET(request: NextRequest) {
   const user = await getCurrentUser();
@@ -15,8 +17,11 @@ export async function GET(request: NextRequest) {
   const params: Array<{ name: string; value: string }> = [{ name: "@uid", value: user.id }];
 
   if (search) {
-    query += " AND (CONTAINS(LOWER(c.name), @search) OR CONTAINS(c.faxNumber, @search) OR CONTAINS(LOWER(c.company), @search))";
+    // Search the raw stored value AND a normalized form so users can find a
+    // contact by typing dashes/parens or by typing pure digits.
+    query += " AND (CONTAINS(LOWER(c.name), @search) OR CONTAINS(c.faxNumber, @search) OR CONTAINS(c.faxNumber, @searchDigits) OR CONTAINS(LOWER(c.company), @search))";
     params.push({ name: "@search", value: search.toLowerCase() });
+    params.push({ name: "@searchDigits", value: normalizePhone(search) });
   }
 
   query += " ORDER BY c.name ASC";
@@ -37,7 +42,7 @@ export async function POST(request: NextRequest) {
     id: uuid(),
     userId: user.id,
     name: body.name,
-    faxNumber: body.faxNumber,
+    faxNumber: normalizePhone(body.faxNumber),
     company: body.company || "",
     email: body.email || "",
     notes: body.notes || "",
@@ -49,6 +54,15 @@ export async function POST(request: NextRequest) {
 
   const container = await containers.contacts();
   await container.items.create(contact);
+
+  await audit({
+    userId: user.id,
+    action: "contact.create",
+    resourceType: "contact",
+    resourceId: contact.id,
+    detail: { name: contact.name, faxNumber: contact.faxNumber },
+    request,
+  });
 
   return NextResponse.json(contact, { status: 201 });
 }

@@ -6,13 +6,20 @@ import { faxbackFetch } from "./session";
 // ============================================================
 
 export interface EmailRoutingConfig {
-  /** Email address to forward received faxes to */
+  /**
+   * Destination email address(es) — written to QueueProfileXml @Ea.
+   * Used for forwarded faxes AND delivery/non-delivery notifications.
+   * Multiple addresses may be passed comma-separated (best-effort; FaxBack
+   * support is undocumented — invalid values will surface as ModifyAccount errors).
+   */
   deliveryEmail: string;
-  /** Attachment format: "pdf" or "tif" */
+  /** Forward received faxes to email — controls Rt bit 2 */
+  forwardReceived: boolean;
+  /** Attachment format for forwarded faxes: "pdf" or "tif" (only meaningful when forwardReceived) */
   attachmentFormat: "pdf" | "tif";
-  /** Send delivery notification with fax image attached */
+  /** Send delivery notification email (Dn) */
   deliveryNotification: boolean;
-  /** Send non-delivery notification with fax image attached */
+  /** Send non-delivery notification email (Ndn) */
   nonDeliveryNotification: boolean;
 }
 
@@ -36,7 +43,8 @@ export interface AccountDetails {
   accountGuid: string;
   accountId: string;
   emailAlias: string | null;
-  queueProfileXml: string | null;
+  /** Raw QueueProfileXml value as returned by FaxBack — may be string, object-with-$attrs, or attrs object. */
+  queueProfileXml: unknown;
   useCoverPage: number;
   emailCoverType: number;
   raw: Record<string, unknown>;
@@ -76,7 +84,7 @@ export async function readAccount(accountGuid: string): Promise<AccountDetails> 
     accountGuid: (account.AccountGuid as string) || accountGuid,
     accountId: (account.AccountId as string) || "",
     emailAlias: (account.EmailAlias as string) || null,
-    queueProfileXml: (account.QueueProfileXml as string) || null,
+    queueProfileXml: account.QueueProfileXml ?? account.QPXml ?? null,
     useCoverPage: parseInt((account.UseCoverPage as string) || "0", 10),
     emailCoverType: parseInt((account.EmailCoverType as string) || "0", 10),
     raw: account,
@@ -236,6 +244,9 @@ export async function searchAccounts(searchString = ""): Promise<AccountSummary[
   // Numeric-only query (e.g. "203230") matches fax numbers regardless of
   // formatting — strip non-digits from both sides for a generous match.
   const digitsOnly = q.replace(/\D+/g, "");
+  // Normalized query: strip all non-alphanumeric chars so "1harrygmail"
+  // matches an accountId like "1harry@gmail.com".
+  const normalized = q.replace(/[^a-z0-9]/g, "");
   return summaries.filter((s) => {
     const hay = [
       s.accountId,
@@ -246,12 +257,58 @@ export async function searchAccounts(searchString = ""): Promise<AccountSummary[
       .join(" ")
       .toLowerCase();
     if (hay.includes(q)) return true;
+    // Normalized match — handles queries missing @, ., -, etc.
+    if (normalized) {
+      const normalizedHay = hay.replace(/[^a-z0-9]/g, "");
+      if (normalizedHay.includes(normalized)) return true;
+    }
     if (digitsOnly && s.faxNumber) {
       const fxDigits = s.faxNumber.replace(/\D+/g, "");
       if (fxDigits.includes(digitsOnly)) return true;
     }
     return false;
   });
+}
+
+/**
+ * Normalize FaxBack QueueProfileXml (string / object / attrs object) to a flat attrs map.
+ */
+async function extractQueueProfileAttrs(qp: unknown): Promise<Record<string, string>> {
+  if (qp == null) return {};
+  if (typeof qp === "string") {
+    const s = qp.trim();
+    if (!s) return {};
+    try {
+      const wrapped = s.startsWith("<") ? s : `<QPXml ${s} />`;
+      const parsed = await parseStringPromise(wrapped, { explicitArray: false });
+      // Could be wrapped as <QueueProfileXml ... /> or <QPXml ... />, possibly inside another node.
+      const node =
+        parsed?.QueueProfileXml ??
+        parsed?.QPXml ??
+        (parsed && typeof parsed === "object" ? Object.values(parsed)[0] : parsed);
+      const attrs = (node && typeof node === "object" && (node as Record<string, unknown>).$) as
+        | Record<string, string>
+        | undefined;
+      return attrs ?? (node && typeof node === "object" ? (node as Record<string, string>) : {});
+    } catch {
+      return {};
+    }
+  }
+  if (typeof qp === "object") {
+    const o = qp as Record<string, unknown>;
+    if (o.$ && typeof o.$ === "object") return stripAtPrefix(o.$ as Record<string, string>);
+    // Already an attrs map (possibly with @-prefixed keys when JSON-style XML attrs are used)
+    return stripAtPrefix(o as Record<string, string>);
+  }
+  return {};
+}
+
+function stripAtPrefix(attrs: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(attrs)) {
+    out[k.startsWith("@") ? k.slice(1) : k] = v;
+  }
+  return out;
 }
 
 /**
@@ -264,24 +321,38 @@ export async function getAccountEmailSettings(
 
   // Parse outbound routing from QueueProfileXml attributes
   let outbound: EmailRoutingConfig | null = null;
-  if (account.queueProfileXml) {
-    // QueueProfileXml can be a string with attributes or an object
-    const qp =
+  const attrs = await extractQueueProfileAttrs(account.queueProfileXml);
+
+  if (process.env.FAXBACK_DEBUG_QPXML !== "0") {
+    console.log(
+      `[faxback] ReadAccount keys for ${accountGuid}:`,
+      Object.keys(account.raw)
+    );
+    console.log(
+      `[faxback] QueueProfileXml for ${accountGuid}:`,
       typeof account.queueProfileXml === "string"
-        ? await parseQueueProfile(account.queueProfileXml)
-        : (account.queueProfileXml as Record<string, string>);
+        ? account.queueProfileXml
+        : JSON.stringify(account.queueProfileXml),
+      "=> attrs",
+      JSON.stringify(attrs)
+    );
+  }
 
-    // Check for $ (attributes from xml2js)
-    const attrs = (qp as any)?.$ || qp;
+  // Rt is a bitmask: 1=ATA, 2=Email, 4=FAXability, 8=Client inbox
+  const rtNum = attrs?.Rt != null ? parseInt(String(attrs.Rt), 10) : NaN;
+  const emailBitSet = Number.isFinite(rtNum) && (rtNum & 2) === 2;
+  // Dn / Ndn: "0" = off, anything starting with non-"0" (e.g. "2/1", "2/2") = on
+  const dnOn = !!attrs?.Dn && String(attrs.Dn).trim() !== "0" && String(attrs.Dn).trim() !== "";
+  const ndnOn = !!attrs?.Ndn && String(attrs.Ndn).trim() !== "0" && String(attrs.Ndn).trim() !== "";
 
-    if (attrs?.Rt === "2" && attrs?.Ea) {
-      outbound = {
-        deliveryEmail: attrs.Ea,
-        attachmentFormat: attrs.Ef === "0" ? "tif" : "pdf",
-        deliveryNotification: attrs.Dn?.startsWith("2") ?? true,
-        nonDeliveryNotification: attrs.Ndn?.startsWith("2") ?? true,
-      };
-    }
+  if (attrs?.Ea || emailBitSet || dnOn || ndnOn) {
+    outbound = {
+      deliveryEmail: attrs.Ea ?? "",
+      forwardReceived: emailBitSet,
+      attachmentFormat: attrs.Ef === "0" ? "tif" : "pdf",
+      deliveryNotification: dnOn,
+      nonDeliveryNotification: ndnOn,
+    };
   }
 
   return {
@@ -297,20 +368,94 @@ export async function getAccountEmailSettings(
 async function parseQueueProfile(
   xmlOrAttrs: string
 ): Promise<Record<string, string>> {
-  try {
-    const wrapped = xmlOrAttrs.startsWith("<")
-      ? xmlOrAttrs
-      : `<QueueProfileXml ${xmlOrAttrs} />`;
-    const parsed = await parseStringPromise(wrapped, { explicitArray: false });
-    return parsed?.QueueProfileXml?.$ || {};
-  } catch {
-    return {};
-  }
+  return extractQueueProfileAttrs(xmlOrAttrs);
 }
 
 // ============================================================
 // Inbound: Create / Delete Email Alias
 // ============================================================
+
+/**
+ * List all email aliases registered for an account.
+ * Each alias is an email address that, when used as the From: of an email to
+ * `<faxNumber>@<faxbackEmailDomain>`, will submit a fax on behalf of this account.
+ */
+export async function listEmailAliases(accountGuid: string): Promise<string[]> {
+  const body = `<?xml version="1.0" encoding="utf-8"?>
+<NSX>
+  <Account>
+    <AccountGuid>${escapeXml(accountGuid)}</AccountGuid>
+  </Account>
+  <Include>EmailAlias</Include>
+</NSX>`;
+
+  const res = await faxbackFetch("Accounts/GetEmailAliases", {
+    method: "POST",
+    headers: { "Content-Type": "application/xml", Accept: "application/xml" },
+    body,
+  });
+
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`GetEmailAliases failed: ${res.status} — ${errText}`);
+  }
+
+  const text = await res.text();
+  try {
+    const parsed = await parseStringPromise(text, { explicitArray: false });
+    if (process.env.FAXBACK_DEBUG_ALIASES !== "0") {
+      console.log(`[faxback] GetEmailAliases raw for ${accountGuid}:`, text.slice(0, 1000));
+      console.log(`[faxback] GetEmailAliases parsed for ${accountGuid}:`, JSON.stringify(parsed).slice(0, 1000));
+    }
+    // Try common shapes
+    const candidates: unknown[] = [
+      parsed?.NSX?.EmailAliasRecord,
+      parsed?.NSX?.EmailAliases?.EmailAliasRecord,
+      parsed?.NSX?.EmailAliases,
+      parsed?.NSX?.Account?.EmailAliases,
+      parsed?.HttpService?.NSXResponse?.GetEmailAliasesResponse?.EmailAliases,
+      parsed?.NSX?.Aliases,
+      parsed?.NSX?.Account?.Aliases,
+      parsed?.NSX?.EmailAlias,
+      parsed?.NSX?.Account?.EmailAlias,
+    ];
+    let aliasesNode: unknown = candidates.find((c) => c != null);
+    if (!aliasesNode) return [];
+    // aliasesNode may itself be a string, array of strings, or {EmailAlias: ...}
+    let list: unknown[] = [];
+    if (typeof aliasesNode === "string") {
+      list = [aliasesNode];
+    } else if (Array.isArray(aliasesNode)) {
+      list = aliasesNode;
+    } else if (typeof aliasesNode === "object") {
+      const inner = (aliasesNode as Record<string, unknown>).EmailAlias;
+      if (Array.isArray(inner)) list = inner;
+      else if (inner != null) list = [inner];
+      else list = [aliasesNode];
+    }
+    return Array.from(
+      new Set(
+        list
+          .map((a) => {
+            if (typeof a === "string") return a;
+            if (a && typeof a === "object") {
+              const o = a as Record<string, unknown>;
+              return (
+                (typeof o.EmailAlias === "string" && o.EmailAlias) ||
+                (typeof o._ === "string" && o._) ||
+                ""
+              );
+            }
+            return "";
+          })
+          .filter((s): s is string => !!s)
+          .map((s) => s.trim().toLowerCase())
+      )
+    );
+  } catch {
+    return [];
+  }
+}
 
 /**
  * Create an email alias for a customer (email-to-fax inbound).
@@ -372,13 +517,33 @@ export async function deleteEmailAlias(
 // ============================================================
 
 /**
- * Configure outbound fax-to-email forwarding for a customer.
- * Sets QueueProfileXml to route received faxes to email as PDF.
+ * Configure email-related QueueProfileXml fields on an account.
+ * Single email address (or comma-separated list) drives:
+ *   - forwarding received faxes (Rt bit 2 + Ea + Ef)
+ *   - delivery notifications (Dn)
+ *   - non-delivery notifications (Ndn)
+ * Any combination of the three flags is permitted as long as `deliveryEmail` is set.
+ * If all three flags are off, call `disableEmailRouting` instead.
  */
 export async function setEmailRouting(
   accountGuid: string,
   config: EmailRoutingConfig
 ): Promise<void> {
+  const anyEnabled =
+    config.forwardReceived || config.deliveryNotification || config.nonDeliveryNotification;
+  if (!anyEnabled) {
+    await disableEmailRouting(accountGuid);
+    return;
+  }
+  if (!config.deliveryEmail?.trim()) {
+    throw new Error("Email address is required when any forwarding/notification option is enabled");
+  }
+
+  // Read current Rt so we preserve other routing bits (ATA=1, FAXability=4, Client inbox=8).
+  const currentRt = await readCurrentRt(accountGuid);
+  // Rt: bit OR — 1=ATA, 2=Email, 4=FAXability, 8=Client inbox.
+  const newRt = config.forwardReceived ? currentRt | 2 : currentRt & ~2;
+  const rt = String(newRt || 1); // never leave Rt at 0
   const ef = config.attachmentFormat === "pdf" ? "1" : "0";
   const dn = config.deliveryNotification ? "2/1" : "0";
   const ndn = config.nonDeliveryNotification ? "2/1" : "0";
@@ -387,7 +552,7 @@ export async function setEmailRouting(
 <NSX>
   <Account>
     <AccountGuid>${escapeXml(accountGuid)}</AccountGuid>
-    <QueueProfileXml Rt="2" Ea="${escapeXml(config.deliveryEmail)}" Ef="${ef}" Dn="${dn}" Ndn="${ndn}" />
+    <QPXml Rt="${rt}" Ea="${escapeXml(config.deliveryEmail.trim())}" Ef="${ef}" Dn="${dn}" Ndn="${ndn}" />
   </Account>
 </NSX>`;
 
@@ -403,15 +568,32 @@ export async function setEmailRouting(
   }
 }
 
+async function readCurrentRt(accountGuid: string): Promise<number> {
+  try {
+    const account = await readAccount(accountGuid);
+    if (!account.queueProfileXml) return 1;
+    const attrs = await extractQueueProfileAttrs(account.queueProfileXml);
+    const n = parseInt(String(attrs?.Rt ?? "1"), 10);
+    return Number.isFinite(n) && n > 0 ? n : 1;
+  } catch {
+    return 1;
+  }
+}
+
 /**
  * Disable outbound email routing — set routing back to queue (portal-only).
  */
 export async function disableEmailRouting(accountGuid: string): Promise<void> {
+  // Preserve other Rt bits; just clear the Email (2) bit.
+  const currentRt = await readCurrentRt(accountGuid);
+  const newRt = currentRt & ~2;
+  const rt = String(newRt || 1);
+
   const body = `<?xml version="1.0" encoding="utf-8"?>
 <NSX>
   <Account>
     <AccountGuid>${escapeXml(accountGuid)}</AccountGuid>
-    <QueueProfileXml Rt="1" />
+    <QPXml Rt="${rt}" Dn="0" Ndn="0" />
   </Account>
 </NSX>`;
 
@@ -496,7 +678,15 @@ export async function updateEmailConfig(
 
   // --- Outbound routing ---
   if (params.outbound) {
-    await setEmailRouting(params.accountGuid, params.outbound);
+    const anyOn =
+      params.outbound.forwardReceived ||
+      params.outbound.deliveryNotification ||
+      params.outbound.nonDeliveryNotification;
+    if (anyOn) {
+      await setEmailRouting(params.accountGuid, params.outbound);
+    } else if (current.outbound) {
+      await disableEmailRouting(params.accountGuid);
+    }
   } else if (!params.outbound && current.outbound) {
     await disableEmailRouting(params.accountGuid);
   }

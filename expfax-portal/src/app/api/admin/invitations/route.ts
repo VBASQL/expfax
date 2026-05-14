@@ -7,6 +7,7 @@ import {
 } from "@/lib/auth/invitations";
 import { getConfig } from "@/lib/config";
 import { isMailerConfigured, sendInvitationEmail } from "@/lib/services/mailer";
+import { normalizePhone } from "@/lib/phone";
 
 function isValidEmail(email: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
@@ -59,7 +60,7 @@ export async function POST(request: Request) {
     createdBy: user.id,
     initialFaxbackAccountId: body.initialFaxbackAccountId ?? null,
     initialFaxbackAccountGuid: body.initialFaxbackAccountGuid ?? null,
-    initialFaxNumber: body.initialFaxNumber ?? null,
+    initialFaxNumber: body.initialFaxNumber ? (normalizePhone(body.initialFaxNumber) || null) : null,
     initialPurgeDays:
       typeof body.initialPurgeDays === "number" ? body.initialPurgeDays : null,
   });

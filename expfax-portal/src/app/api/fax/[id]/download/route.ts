@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth/session";
 import { downloadFaxPdf } from "@/lib/services/blob-storage";
 import { getFaxWithAccess } from "@/lib/db/fax-access";
+import sharp from "sharp";
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const user = await getCurrentUser();
@@ -15,6 +16,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
 
   const inline = _req.nextUrl.searchParams.get("inline") === "1";
   const sentDocParam = _req.nextUrl.searchParams.get("sentdoc");
+  const wantPreview = _req.nextUrl.searchParams.get("preview") === "1";
 
   // Serve a specific sentDocument blob when requested.
   // Used as a fallback preview while the rendered fax PDF is not yet available.
@@ -26,6 +28,18 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
 
     const buf = await downloadFaxPdf(blobPath);
     const ext = blobPath.split(".").pop()?.toLowerCase() ?? "pdf";
+
+    // Convert TIFF → PNG for browser preview (browsers can't display TIFF natively)
+    if (wantPreview && (ext === "tiff" || ext === "tif")) {
+      const pngBuf = await sharp(buf).png().toBuffer();
+      return new NextResponse(new Uint8Array(pngBuf), {
+        headers: {
+          "Content-Type": "image/png",
+          "Content-Disposition": `inline; filename="fax-preview-${id}.png"`,
+        },
+      });
+    }
+
     const contentType =
       ext === "pdf" ? "application/pdf" :
       ext === "tiff" || ext === "tif" ? "image/tiff" :

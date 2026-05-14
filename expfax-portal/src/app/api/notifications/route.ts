@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth/session";
 import { containers } from "@/lib/db/cosmos";
+import { formatPhone } from "@/lib/phone";
 
 export async function GET() {
   const user = await getCurrentUser();
@@ -13,6 +14,7 @@ export async function GET() {
     .query({
       query: `SELECT c.id, c.senderFaxNumber, c.senderName, c.submitTime, c.documents
               FROM c WHERE c.userId = @uid AND c.direction = 'received' AND c.isRead = false AND c.isDeleted = false
+              AND (NOT IS_DEFINED(c.notificationDismissedAt) OR c.notificationDismissedAt = null)
               ORDER BY c.submitTime DESC OFFSET 0 LIMIT 10`,
       parameters: [{ name: "@uid", value: user.id }],
     })
@@ -31,10 +33,11 @@ export async function GET() {
     })
     .fetchAll();
 
-  // Count total unread
+  // Count total unread (received only — represents unread inbox count, not dismissed-from-bell)
   const { resources: countResult } = await container.items
     .query({
-      query: `SELECT VALUE COUNT(1) FROM c WHERE c.userId = @uid AND c.direction = 'received' AND c.isRead = false AND c.isDeleted = false`,
+      query: `SELECT VALUE COUNT(1) FROM c WHERE c.userId = @uid AND c.direction = 'received' AND c.isRead = false AND c.isDeleted = false
+              AND (NOT IS_DEFINED(c.notificationDismissedAt) OR c.notificationDismissedAt = null)`,
       parameters: [{ name: "@uid", value: user.id }],
     })
     .fetchAll();
@@ -43,7 +46,7 @@ export async function GET() {
     ...received.map((f: Record<string, unknown>) => ({
       id: f.id as string,
       type: "received" as const,
-      message: `New fax from ${(f.senderName as string) || (f.senderFaxNumber as string)}`,
+      message: `New fax from ${(f.senderName as string) || formatPhone((f.senderFaxNumber as string) || "")}`,
       detail: `${((f.documents as Array<{ pageCount?: number }>) || []).reduce((s: number, d) => s + (d.pageCount || 0), 0)} pages`,
       time: f.submitTime as string,
       href: `/inbox/${f.id as string}`,
@@ -52,8 +55,8 @@ export async function GET() {
       id: f.id as string,
       type: f.status === "sent" ? ("delivered" as const) : ("failed" as const),
       message: f.status === "sent"
-        ? `Fax delivered to ${(f.recipients as Array<{ name?: string; faxNumber?: string }>)?.[0]?.name || (f.recipients as Array<{ name?: string; faxNumber?: string }>)?.[0]?.faxNumber || "recipient"}`
-        : `Fax failed — ${(f.recipients as Array<{ name?: string; faxNumber?: string }>)?.[0]?.name || (f.recipients as Array<{ name?: string; faxNumber?: string }>)?.[0]?.faxNumber || "recipient"}`,
+        ? `Fax delivered to ${(f.recipients as Array<{ name?: string; faxNumber?: string }>)?.[0]?.name || formatPhone((f.recipients as Array<{ name?: string; faxNumber?: string }>)?.[0]?.faxNumber || "") || "recipient"}`
+        : `Fax failed — ${(f.recipients as Array<{ name?: string; faxNumber?: string }>)?.[0]?.name || formatPhone((f.recipients as Array<{ name?: string; faxNumber?: string }>)?.[0]?.faxNumber || "") || "recipient"}`,
       detail: (f.subject as string) || "",
       time: f.submitTime as string,
       href: `/sent/${f.id as string}`,

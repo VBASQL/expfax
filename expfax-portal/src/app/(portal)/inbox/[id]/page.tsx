@@ -1,11 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useEffect, useMemo, useState } from "react";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { ArrowLeft, Download, FileText } from "lucide-react";
+import { formatPhone, normalizePhone } from "@/lib/phone";
+import { useContactNames } from "@/lib/contacts/use-contact-names";
 
 interface FaxDetail {
   id: string;
@@ -23,6 +25,9 @@ interface FaxDetail {
 export default function InboxDetailPage() {
   const { id } = useParams();
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const backTo = searchParams.get("from") === "history" ? "/history" : "/inbox";
+  const backLabel = searchParams.get("from") === "history" ? "Back to History" : "Back to Inbox";
   const [fax, setFax] = useState<FaxDetail | null>(null);
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
 
@@ -37,13 +42,23 @@ export default function InboxDetailPage() {
     });
   }, [id]);
 
+  // Batch-resolve contact name for the sender (empty array safe before fax loads)
+  const senderNumbers = useMemo(
+    () => (fax?.senderFaxNumber ? [fax.senderFaxNumber] : []),
+    [fax?.senderFaxNumber]
+  );
+  const contactNames = useContactNames(senderNumbers);
+  const senderContact = fax?.senderFaxNumber
+    ? contactNames[normalizePhone(fax.senderFaxNumber)]
+    : undefined;
+
   if (!fax) return <p className="text-sm text-slate-400 p-8">Loading...</p>;
 
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-3">
-        <Button variant="ghost" size="sm" onClick={() => router.push("/inbox")}>
-          <ArrowLeft className="h-4 w-4 mr-1" /> Back to Inbox
+        <Button variant="ghost" size="sm" onClick={() => router.push(backTo)}>
+          <ArrowLeft className="h-4 w-4 mr-1" /> {backLabel}
         </Button>
       </div>
 
@@ -70,9 +85,12 @@ export default function InboxDetailPage() {
               <CardTitle className="text-sm">Fax Details</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3 text-sm">
-              <div><span className="text-slate-400">From:</span> <span className="font-medium ml-2">{fax.senderFaxNumber || fax.senderName}</span></div>
-              <div><span className="text-slate-400">Company:</span> <span className="ml-2">{fax.senderCompany || "—"}</span></div>
-              <div><span className="text-slate-400">Subject:</span> <span className="ml-2">{fax.subject || "—"}</span></div>
+              <div><span className="text-slate-400">From:</span> <span className="font-medium ml-2">
+                {senderContact?.name
+                  ? <>{senderContact.name} <span className="text-slate-400 font-mono font-normal">· {formatPhone(fax.senderFaxNumber)}</span></>
+                  : (formatPhone(fax.senderFaxNumber) || fax.senderName)}
+              </span></div>
+              <div><span className="text-slate-400">Company:</span> <span className="ml-2">{senderContact?.company || fax.senderCompany || "\u2014"}</span></div>
               <div><span className="text-slate-400">Status:</span> <Badge variant="secondary" className="ml-2 text-[10px]">{fax.status}</Badge></div>
               <div><span className="text-slate-400">Received:</span> <span className="ml-2">{new Date(fax.submitTime).toLocaleString()}</span></div>
               <div><span className="text-slate-400">Pages:</span> <span className="ml-2">{fax.documents?.reduce((s, d) => s + d.pageCount, 0) || fax.recipients?.[0]?.pageCount || "—"}</span></div>

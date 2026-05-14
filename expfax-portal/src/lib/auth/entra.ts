@@ -1,11 +1,51 @@
-import { MicrosoftEntraId } from "arctic";
+import { MicrosoftEntraId, OAuth2Client, CodeChallengeMethod } from "arctic";
+import type { OAuth2Tokens } from "arctic";
 import { DefaultAzureCredential } from "@azure/identity";
 import { getConfig } from "@/lib/config";
 import { containers } from "@/lib/db/cosmos";
 import type { User } from "@/types";
 
 let entraClient: MicrosoftEntraId | null = null;
-let externalClient: MicrosoftEntraId | null = null;
+let externalClient: CiamEntraClient | null = null;
+let commonClient: MicrosoftEntraId | null = null;
+
+/**
+ * Thin wrapper around Arctic's OAuth2Client that exposes the same interface
+ * as MicrosoftEntraId but targets the External ID CIAM endpoint
+ * ({subdomain}.ciamlogin.com) instead of login.microsoftonline.com.
+ *
+ * Using login.microsoftonline.com for a CIAM tenant produces AADSTS50020
+ * ("account does not exist in tenant") for any account that isn't a member
+ * of that tenant, because Microsoft treats it as a regular workforce tenant.
+ */
+class CiamEntraClient {
+  private base: string;
+  private inner: OAuth2Client;
+
+  constructor(domain: string, clientId: string, clientSecret: string, redirectURI: string) {
+    const subdomain = domain.split(".")[0];
+    this.base = `https://${subdomain}.ciamlogin.com/${domain}`;
+    this.inner = new OAuth2Client(clientId, clientSecret, redirectURI);
+  }
+
+  createAuthorizationURL(state: string, codeVerifier: string, scopes: string[]): URL {
+    return this.inner.createAuthorizationURLWithPKCE(
+      `${this.base}/oauth2/v2.0/authorize`,
+      state,
+      CodeChallengeMethod.S256,
+      codeVerifier,
+      scopes
+    );
+  }
+
+  validateAuthorizationCode(code: string, codeVerifier: string): Promise<OAuth2Tokens> {
+    return this.inner.validateAuthorizationCode(
+      `${this.base}/oauth2/v2.0/token`,
+      code,
+      codeVerifier
+    );
+  }
+}
 
 /**
  * Workforce tenant client (admin sign-in: anyexcel.com).
@@ -24,17 +64,41 @@ export async function getEntraClient(): Promise<MicrosoftEntraId> {
 
 /**
  * External ID / CIAM tenant client (customer sign-up + sign-in).
+ * Uses ciamlogin.com endpoints so that Microsoft accounts (personal, work,
+ * school) can authenticate against the CIAM tenant without being members of it.
  */
-export async function getExternalEntraClient(): Promise<MicrosoftEntraId> {
+export async function getExternalEntraClient(): Promise<CiamEntraClient> {
   if (externalClient) return externalClient;
   const config = await getConfig();
-  externalClient = new MicrosoftEntraId(
-    config.externalTenantId,
+  externalClient = new CiamEntraClient(
+    config.externalTenantDomain,
     config.externalClientId,
     config.externalClientSecret,
     `${config.appUrl}/api/auth/callback`
   );
   return externalClient;
+}
+
+/**
+ * Multitenant / "common" client — federated SSO for any Microsoft account
+ * (personal, work, school) WITHOUT creating a shadow user in our CIAM tenant.
+ * The user signs in to their home tenant (or consumer MSA) and we receive
+ * an ID token whose `oid` + `tid` uniquely identify them.
+ *
+ * Requires the workforce app registration to have "Supported account types"
+ * set to "Accounts in any organizational directory and personal Microsoft
+ * accounts" (multitenant + MSA).
+ */
+export async function getCommonEntraClient(): Promise<MicrosoftEntraId> {
+  if (commonClient) return commonClient;
+  const config = await getConfig();
+  commonClient = new MicrosoftEntraId(
+    "common",
+    config.commonClientId,
+    config.commonClientSecret,
+    `${config.appUrl}/api/auth/callback`
+  );
+  return commonClient;
 }
 
 /**
@@ -255,18 +319,61 @@ export async function createExternalPasswordUser(args: {
 }
 
 /**
- * Look up portal user by Entra ID object ID
+ * Delete a user from the External ID (CIAM) tenant via Graph.
+ * No-op if the user does not exist (404).
  */
-export async function findUserByEntraId(entraId: string): Promise<User | null> {
-  const container = await containers.users();
-  const { resources } = await container.items
-    .query({
-      query: "SELECT * FROM c WHERE c.entraId = @entraId AND c.isActive = true",
-      parameters: [{ name: "@entraId", value: entraId }],
-    })
-    .fetchAll();
+export async function deleteExternalUser(entraId: string): Promise<void> {
+  const token = await getExternalGraphToken();
+  const res = await fetch(
+    `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(entraId)}`,
+    {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
+    }
+  );
+  if (!res.ok && res.status !== 404) {
+    const err = await res.text().catch(() => "");
+    throw new Error(`Graph delete user failed: ${res.status} ${err}`);
+  }
+}
 
-  return resources.length > 0 ? (resources[0] as User) : null;
+/**
+ * Look up portal user by Entra ID object ID, optionally scoped to a tenant.
+ *
+ * For federated /common SSO, oid is unique only within a tenant — so callers
+ * with a known `tid` should pass it. For legacy single-tenant lookups (e.g.
+ * password auth, workforce admin sign-in) `tid` may be omitted and we match
+ * any user with that oid (preserving previous behaviour).
+ */
+export async function findUserByEntraId(
+  entraId: string,
+  entraTenantId?: string | null
+): Promise<User | null> {
+  const container = await containers.users();
+
+  // When tenant id is provided, prefer an exact (oid, tid) match. Allow legacy
+  // rows where entraTenantId is missing/null to match too — but only when no
+  // tenant-scoped row exists for this oid (handled by ordering / filtering).
+  const query = entraTenantId
+    ? "SELECT * FROM c WHERE c.entraId = @entraId AND c.isActive = true AND (c.entraTenantId = @tid OR NOT IS_DEFINED(c.entraTenantId) OR c.entraTenantId = null)"
+    : "SELECT * FROM c WHERE c.entraId = @entraId AND c.isActive = true";
+
+  const parameters: { name: string; value: string }[] = [
+    { name: "@entraId", value: entraId },
+  ];
+  if (entraTenantId) parameters.push({ name: "@tid", value: entraTenantId });
+
+  const { resources } = await container.items.query({ query, parameters }).fetchAll();
+
+  if (resources.length === 0) return null;
+  if (entraTenantId) {
+    // Prefer exact tenant match over legacy null-tenant rows.
+    const exact = resources.find(
+      (r) => (r as User).entraTenantId === entraTenantId
+    );
+    if (exact) return exact as User;
+  }
+  return resources[0] as User;
 }
 
 /**

@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth/session";
 import { containers } from "@/lib/db/cosmos";
+import { normalizePhone } from "@/lib/phone";
+import { audit } from "@/lib/audit/logger";
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const user = await getCurrentUser();
@@ -28,7 +30,7 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
   const updated = {
     ...existing,
     name: body.name ?? existing.name,
-    faxNumber: body.faxNumber ?? existing.faxNumber,
+    faxNumber: body.faxNumber !== undefined ? normalizePhone(body.faxNumber) : existing.faxNumber,
     company: body.company ?? existing.company,
     email: body.email ?? existing.email,
     notes: body.notes ?? existing.notes,
@@ -36,6 +38,7 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
   };
 
   await container.item(id, user.id).replace(updated);
+  await audit({ userId: user.id, action: "contact.update", resourceType: "contact", resourceId: id, detail: { name: updated.name }, request });
   return NextResponse.json(updated);
 }
 
@@ -46,6 +49,6 @@ export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ 
   const { id } = await params;
   const container = await containers.contacts();
   await container.item(id, user.id).delete();
-
+  await audit({ userId: user.id, action: "contact.delete", resourceType: "contact", resourceId: id });
   return NextResponse.json({ success: true });
 }

@@ -47,9 +47,12 @@ interface FaxBackAccount {
 
 type Filter = "unlinked" | "linked" | "all";
 
+// Persists across client-side navigation; resets on hard refresh
+let _adminUsersFilter: Filter = "all";
+
 export default function AdminUsersPage() {
   const [users, setUsers] = useState<UserRow[]>([]);
-  const [filter, setFilter] = useState<Filter>("unlinked");
+  const [filter, setFilter] = useState<Filter>(_adminUsersFilter);
   // Dialog for managing all accounts of a user
   const [manageDialog, setManageDialog] = useState<UserRow | null>(null);
   // Dialog for picking and adding a new account
@@ -64,6 +67,8 @@ export default function AdminUsersPage() {
   // Keep a local copy of accounts being managed so we can reflect immediate changes
   const [managedAccounts, setManagedAccounts] = useState<LinkedAccount[]>([]);
   const [managedDefault, setManagedDefault] = useState<string | null>(null);
+  const [deleteDialog, setDeleteDialog] = useState<UserRow | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   function load() {
     fetch("/api/admin/users")
@@ -251,6 +256,20 @@ export default function AdminUsersPage() {
     load();
   }
 
+  async function handleDeleteUser() {
+    if (!deleteDialog) return;
+    setDeleting(true);
+    const res = await fetch(`/api/admin/users/${deleteDialog.id}`, { method: "DELETE" });
+    setDeleting(false);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      alert(err.error ?? "Delete failed");
+      return;
+    }
+    setDeleteDialog(null);
+    load();
+  }
+
   const counts = useMemo(
     () => ({
       all: users.length,
@@ -271,7 +290,7 @@ export default function AdminUsersPage() {
           {(["unlinked", "linked", "all"] as Filter[]).map((f) => (
             <button
               key={f}
-              onClick={() => setFilter(f)}
+              onClick={() => { _adminUsersFilter = f; setFilter(f); }}
               className={`px-3 py-1 rounded-md ${
                 filter === f
                   ? "bg-slate-900 text-white"
@@ -396,6 +415,15 @@ export default function AdminUsersPage() {
                           </Button>
                         </Link>
                       )}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="text-red-500 hover:text-red-700"
+                        onClick={() => setDeleteDialog(u)}
+                        title="Delete user"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
                     </div>
                   </td>
                 </tr>
@@ -480,7 +508,28 @@ export default function AdminUsersPage() {
 
       {/* Add Account Dialog */}
       <Dialog open={!!addDialog} onOpenChange={() => setAddDialog(null)}>
+
+      {/* Delete User Dialog */}
+      <Dialog open={!!deleteDialog} onOpenChange={(o) => { if (!o) setDeleteDialog(null); }}>
         <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete user?</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-slate-600 py-2">
+            This will permanently delete{" "}
+            <span className="font-semibold">{deleteDialog?.displayName}</span> (
+            {deleteDialog?.email}) from the portal and from Microsoft Entra. This cannot be undone.
+          </p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteDialog(null)} disabled={deleting}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={handleDeleteUser} disabled={deleting}>
+              {deleting ? "Deleting…" : "Delete user"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>        <DialogContent>
           <DialogHeader>
             <DialogTitle>Add FaxBack Account — {addDialog?.displayName}</DialogTitle>
           </DialogHeader>
@@ -492,23 +541,38 @@ export default function AdminUsersPage() {
                 className="w-full text-sm border border-slate-200 rounded-md px-3 py-2 bg-white"
                 placeholder="Filter by AccountId, name, fax number, or GUID…"
                 value={linkSearch}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  setLinkSearch(v);
-                  void loadAccounts(v);
-                }}
+                onChange={(e) => setLinkSearch(e.target.value)}
               />
               <div className="max-h-64 overflow-y-auto rounded-md border border-slate-200 bg-white">
                 {fbLoading && (
                   <div className="px-3 py-3 text-sm text-slate-500">Loading…</div>
                 )}
-                {!fbLoading && fbAccounts.length === 0 && !fbError && (
-                  <div className="px-3 py-3 text-sm text-slate-400">
-                    No accounts match that search.
-                  </div>
-                )}
-                {!fbLoading &&
-                  fbAccounts.map((a) => {
+                {!fbLoading && (() => {
+                  const q = linkSearch.trim().toLowerCase();
+                  const normalized = q.replace(/[^a-z0-9]/g, "");
+                  const digitsOnly = q.replace(/\D+/g, "");
+                  const visible = !q ? fbAccounts : fbAccounts.filter((s) => {
+                    const hay = [s.accountId, s.displayName ?? "", s.accountGuid, s.faxNumber ?? ""].join(" ").toLowerCase();
+                    if (hay.includes(q)) return true;
+                    if (normalized && hay.replace(/[^a-z0-9]/g, "").includes(normalized)) return true;
+                    // Only use digits-only fax search when the query is meaningfully numeric (3+ digits)
+                    if (digitsOnly.length >= 3 && s.faxNumber && s.faxNumber.replace(/\D+/g, "").includes(digitsOnly)) return true;
+                    const tokens = normalized.split(/(?<=[a-z])(?=\d)|(?<=\d)(?=[a-z])/);
+                    if (tokens.length > 1 && tokens.every(t => hay.replace(/[^a-z0-9]/g, "").includes(t))) return true;
+                    return false;
+                  }).sort((a, b) => {
+                    // Exact accountId match first, then prefix, then others
+                    const ai = a.accountId.toLowerCase(), bi = b.accountId.toLowerCase();
+                    if (ai === q && bi !== q) return -1;
+                    if (bi === q && ai !== q) return 1;
+                    if (ai.startsWith(q) && !bi.startsWith(q)) return -1;
+                    if (bi.startsWith(q) && !ai.startsWith(q)) return 1;
+                    return 0;
+                  });
+                  if (visible.length === 0 && !fbError) return (
+                    <div className="px-3 py-3 text-sm text-slate-400">No accounts match that search.</div>
+                  );
+                  return visible.map((a) => {
                     const sel = selectedAcc?.accountGuid === a.accountGuid;
                     return (
                       <button
@@ -530,7 +594,8 @@ export default function AdminUsersPage() {
                         </div>
                       </button>
                     );
-                  })}
+                  });
+                })()}
               </div>
               {fbError && <p className="text-sm text-red-600">{fbError}</p>}
             </div>

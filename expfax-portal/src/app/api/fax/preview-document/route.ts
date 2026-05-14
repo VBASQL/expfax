@@ -25,7 +25,10 @@ export async function POST(request: NextRequest) {
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const { name, contentBase64 } = await request.json() as { name?: string; contentBase64?: string };
+  const { name, contentBase64 } = await request.json() as {
+    name?: string;
+    contentBase64?: string;
+  };
 
   if (!name || !contentBase64) {
     return NextResponse.json({ error: "name and contentBase64 required" }, { status: 400 });
@@ -41,7 +44,7 @@ export async function POST(request: NextRequest) {
   // ── Images ── convert to fax TIFF, then back to PNG for display
   if (IMAGE_EXTENSIONS.has(ext)) {
     const tiffBuf = await imageToTiff(inputBuf);
-    const pngBuf  = await sharp(tiffBuf).png().toBuffer();
+    const pngBuf = await sharp(tiffBuf).png().toBuffer();
     return NextResponse.json({
       type: "image",
       dataUrl: `data:image/png;base64,${pngBuf.toString("base64")}`,

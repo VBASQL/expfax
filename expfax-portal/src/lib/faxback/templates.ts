@@ -18,7 +18,7 @@ export async function addTemplate(
   </Template>
 </NSX>`;
 
-  const res = await faxbackFetch("Accounts/AddTemplateContent", {
+  const res = await faxbackFetch("Accounts/AddTemplate", {
     method: "POST",
     headers: { "Content-Type": "text/xml" },
     body,

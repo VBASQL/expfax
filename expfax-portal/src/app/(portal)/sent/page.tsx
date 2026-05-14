@@ -7,9 +7,9 @@ export default async function SentPage() {
   if (!user) redirect("/login");
 
   const accounts = user.faxbackAccounts?.length
-    ? user.faxbackAccounts.map((a) => ({ accountGuid: a.accountGuid, accountId: a.accountId, label: a.label }))
+    ? user.faxbackAccounts.map((a) => ({ accountGuid: a.accountGuid, accountId: a.accountId, faxNumber: a.faxNumber, label: a.label }))
     : user.faxbackAccountGuid
-      ? [{ accountGuid: user.faxbackAccountGuid, accountId: user.faxbackAccountId ?? "", label: null }]
+      ? [{ accountGuid: user.faxbackAccountGuid, accountId: user.faxbackAccountId ?? "", faxNumber: null, label: null }]
       : [];
 
   return (

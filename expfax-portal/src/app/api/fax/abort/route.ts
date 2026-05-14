@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { validateSession } from "@/lib/auth/session";
 import { readMessage, abortMessage } from "@/lib/faxback/messages";
+import { audit } from "@/lib/audit/logger";
 
 export async function POST(request: NextRequest) {
   const { valid, user } = await validateSession();
@@ -26,6 +27,13 @@ export async function POST(request: NextRequest) {
     }
 
     await abortMessage(messageHandle);
+    await audit({
+      userId: user.id,
+      action: "fax.abort",
+      resourceType: "fax",
+      resourceId: messageHandle,
+      request,
+    });
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error("Abort fax error:", error);

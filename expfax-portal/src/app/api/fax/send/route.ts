@@ -2,11 +2,13 @@ import { NextRequest, NextResponse } from "next/server";
 import { v4 as uuid } from "uuid";
 import { getCurrentUser } from "@/lib/auth/session";
 import { sendMessage } from "@/lib/faxback/messages";
-import { generateCoverHtml } from "@/lib/covers/html-generator";
+import { generateCoverHtml, substitutePlaceholders } from "@/lib/covers/html-generator";
 import { prepareFaxDocument, countDocumentPages } from "@/lib/documents/converter";
 import { uploadSentDocuments } from "@/lib/services/blob-storage";
 import { containers } from "@/lib/db/cosmos";
+import { normalizePhone } from "@/lib/phone";
 import type { FaxMessage, FaxRecipient, FaxDocument } from "@/types";
+import { audit } from "@/lib/audit/logger";
 
 /** Cosmos IDs cannot contain /, \, #, or ?  — sanitize the FaxBack handle.
  *  Also lowercase: FaxBack returns the handle in different cases between
@@ -35,6 +37,7 @@ export async function POST(request: NextRequest) {
     scheduleTime,
     billingCode,
     fromAccountGuid, // Optional: which FaxBack account to send from
+    fromFaxNumber,   // Optional: which DID on that account (sets TSID/ANI per recipient)
   } = body;
 
   // Resolve which account to send from
@@ -56,6 +59,21 @@ export async function POST(request: NextRequest) {
     }
   }
 
+  // Validate fromFaxNumber belongs to the resolved account (defends against tampered requests).
+  let sendFaxNumber: string | undefined;
+  if (fromFaxNumber) {
+    const acct = (user.faxbackAccounts ?? []).find((a) => a.accountGuid === sendAccountGuid);
+    const allowed = (acct?.faxNumber ?? user.faxNumber ?? "")
+      .split(",")
+      .map((n) => normalizePhone(n))
+      .filter(Boolean);
+    const requested = normalizePhone(fromFaxNumber);
+    if (allowed.length > 0 && !allowed.includes(requested)) {
+      return NextResponse.json({ error: "Selected fax number is not assigned to that account." }, { status: 403 });
+    }
+    sendFaxNumber = requested;
+  }
+
   if (!recipients || !Array.isArray(recipients) || recipients.filter((r: { faxNumber?: string }) => r.faxNumber?.trim()).length === 0) {
     return NextResponse.json({ success: false, error: "At least one recipient fax number is required" }, { status: 400 });
   }
@@ -64,16 +82,53 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ success: false, error: "At least one document or cover page is required" }, { status: 400 });
   }
 
-  const validRecipients = recipients.filter((r: { faxNumber?: string }) => r.faxNumber?.trim());
+  // Normalize all recipient numbers (strip everything except digits + leading +).
+  const validRecipients = recipients
+    .filter((r: { faxNumber?: string }) => r.faxNumber?.trim())
+    .map((r: { name?: string; faxNumber: string }) => ({
+      name: r.name || "",
+      faxNumber: normalizePhone(r.faxNumber),
+    }))
+    .filter((r: { faxNumber: string }) => r.faxNumber.length > 0);
 
-  // Build the documents list, prepending a one-time cover page RTF if requested
+  // Build the documents list, prepending a one-time cover page HTML if requested
   let rawDocuments = documents as Array<{ name: string; contentBase64: string }>;
 
+  // If a saved template was selected, load its bodyText + logo from Cosmos.
+  // Templates are Cosmos-only — rendered server-side here as HTML, identical to
+  // the in-browser preview (same generateCoverHtml). FaxBack receives a single
+  // HTML cover document; no <CoverTemplate> / RTF substitution is involved.
+  let savedTemplate: { bodyText: string; headerImageBase64?: string; headerImageType?: "png" | "jpeg" } | null = null;
+  if (coverTemplateId) {
+    try {
+      const tmplContainer = await containers.coverTemplates();
+      const { resources } = await tmplContainer.items.query<{
+        bodyText?: string;
+        headerImageBase64?: string;
+        headerImageType?: "png" | "jpeg";
+      }>({
+        query: "SELECT c.bodyText, c.headerImageBase64, c.headerImageType FROM c WHERE c.id = @id",
+        parameters: [{ name: "@id", value: coverTemplateId }],
+      }).fetchAll();
+      const row = resources[0];
+      if (row) {
+        savedTemplate = {
+          bodyText: row.bodyText || "",
+          headerImageBase64: row.headerImageBase64,
+          headerImageType: row.headerImageType,
+        };
+      }
+    } catch (err) {
+      console.error("[send] Failed to load cover template:", err);
+    }
+  }
+
   if (oneTimeCover) {
-    // Generate cover as HTML — same bytes shown in the preview iframe and sent to FaxBack.
-    // Note: base64 PNG letterhead images are not supported by FaxBack's HTML renderer,
-    // so the coverTemplateId letterhead is intentionally omitted here.
-    const html = generateCoverHtml({
+    // Same renderer used by the preview iframe — WYSIWYG between preview and the
+    // bytes sent to FaxBack. The optional logo is embedded as a base64 data URI;
+    // FaxBack's HTML renderer drops base64 images, so the logo will only appear
+    // in the in-browser preview, but everything else (layout, text) is identical.
+    const fields = {
       senderName:      String(oneTimeCover.senderName      || ""),
       senderCompany:   String(oneTimeCover.senderCompany   || ""),
       senderFax:       String(oneTimeCover.senderFax       || ""),
@@ -81,7 +136,19 @@ export async function POST(request: NextRequest) {
       receiverName:    String(oneTimeCover.receiverName    || ""),
       receiverCompany: String(oneTimeCover.receiverCompany || ""),
       subject:         String(oneTimeCover.subject         || subject || ""),
-      message:         String(oneTimeCover.message         || ""),
+    };
+    const comments = String(oneTimeCover.message || "");
+    // When a template is selected, the template's bodyText is the FIXED cover body.
+    // $(Comments)/$(Cover) and other $(Token) placeholders inside it are filled in
+    // from the form fields. Without a template, the comments textbox IS the body.
+    const messageBody = savedTemplate?.bodyText
+      ? substitutePlaceholders(savedTemplate.bodyText, { ...fields, comments })
+      : comments;
+    const html = generateCoverHtml({
+      ...fields,
+      message: messageBody,
+      headerImageBase64: savedTemplate?.headerImageBase64,
+      headerImageType:   savedTemplate?.headerImageType,
     });
     const coverBase64 = Buffer.from(html).toString("base64");
     rawDocuments = [
@@ -96,11 +163,11 @@ export async function POST(request: NextRequest) {
   );
 
   // Count pages from the original buffers before sending.
-  // - One-time cover RTF we generated is treated as 1 page (RTF has no reliable page count without rendering)
+  // - One-time cover HTML we generated is treated as 1 page
   // - PDFs: parsed with pdf-lib; TIFFs: sharp metadata; images: always 1
   const rawDocumentPageCounts = await Promise.all(
     rawDocuments.map(async (d, i) => {
-      if (oneTimeCover && i === 0) return 1; // generated cover RTF
+      if (oneTimeCover && i === 0) return 1; // generated cover HTML
       const buf = Buffer.from(d.contentBase64, "base64");
       return countDocumentPages(d.name, buf);
     })
@@ -115,6 +182,7 @@ export async function POST(request: NextRequest) {
       billingCode,
       resolution: resolution ?? 0,
       scheduleTime,
+      fromFaxNumber: sendFaxNumber,
       recipients: validRecipients.map((r: { name?: string; faxNumber: string }) => ({ name: r.name || "", faxNumber: r.faxNumber })),
       documents: finalDocuments,
     });
@@ -149,7 +217,7 @@ export async function POST(request: NextRequest) {
       subject: subject || "",
       senderName: user.displayName,
       senderCompany: "",
-      senderFaxNumber: "",
+      senderFaxNumber: sendFaxNumber ?? "",
       coverTemplate: "",
       appInfo: "",
       billingCode: billingCode || "",
@@ -201,6 +269,18 @@ export async function POST(request: NextRequest) {
       console.error("Failed to write fax record to Cosmos:", err);
     }
 
+    await audit({
+      userId: user.id,
+      action: "fax.send",
+      resourceType: "fax",
+      resourceId: messageId,
+      detail: {
+        handle,
+        recipients: validRecipients.map((r: { faxNumber: string }) => r.faxNumber),
+        pages: rawDocumentPageCounts.reduce((a: number, b: number) => a + b, 0),
+      },
+      request,
+    });
     return NextResponse.json({ success: true, handle });
   } catch (error: unknown) {
     console.error("Send fax error:", error);

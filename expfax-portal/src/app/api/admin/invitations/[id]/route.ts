@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth/session";
 import { audit } from "@/lib/audit/logger";
-import { revokeInvitation } from "@/lib/auth/invitations";
+import { hardDeleteInvitation, revokeInvitation } from "@/lib/auth/invitations";
 
 export async function DELETE(
   request: Request,
@@ -13,6 +13,26 @@ export async function DELETE(
   }
 
   const { id } = await params;
+  const permanent = new URL(request.url).searchParams.get("permanent") === "1";
+
+  if (permanent) {
+    const deleted = await hardDeleteInvitation(id);
+    if (!deleted) {
+      return NextResponse.json({ error: "Not found" }, { status: 404 });
+    }
+
+    await audit({
+      userId: user.id,
+      action: "admin.invitation_delete",
+      resourceType: "invitation",
+      resourceId: id,
+      detail: {},
+      request,
+    });
+
+    return NextResponse.json({ ok: true });
+  }
+
   const updated = await revokeInvitation(id);
   if (!updated) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
@@ -29,3 +49,4 @@ export async function DELETE(
 
   return NextResponse.json({ ok: true });
 }
+

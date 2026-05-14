@@ -100,6 +100,28 @@ resource auditLogContainer 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/c
       id: 'auditLog'
       partitionKey: { paths: ['/userId'], kind: 'Hash' }
       defaultTtl: 7776000
+      indexingPolicy: {
+        indexingMode: 'consistent'
+        includedPaths: [
+          { path: '/*' }
+        ]
+        excludedPaths: [
+          { path: '/_etag/?' }
+        ]
+        compositeIndexes: [
+          [
+            { path: '/timestamp', order: 'descending' }
+          ]
+          [
+            { path: '/action', order: 'ascending' }
+            { path: '/timestamp', order: 'descending' }
+          ]
+          [
+            { path: '/userId', order: 'ascending' }
+            { path: '/timestamp', order: 'descending' }
+          ]
+        ]
+      }
     }
   }
 }

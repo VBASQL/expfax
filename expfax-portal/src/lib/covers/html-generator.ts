@@ -23,12 +23,60 @@ function esc(text: string): string {
     .replace(/"/g, "&quot;");
 }
 
+/**
+ * Substitute FaxBack-style $(Token) placeholders in a template body.
+ * Used by both the in-browser preview and the server-side send route so the
+ * cover message body matches exactly. Unknown tokens are left as-is.
+ */
+export interface PlaceholderContext {
+  senderName?: string;
+  senderCompany?: string;
+  senderFax?: string;
+  senderVoice?: string;
+  receiverName?: string;
+  receiverCompany?: string;
+  subject?: string;
+  /** The per-fax message typed at send time. Fills $(Comments) and $(Cover). */
+  comments?: string;
+  /** Defaults to today in en-US long format. */
+  date?: string;
+}
+
+export function substitutePlaceholders(text: string, ctx: PlaceholderContext): string {
+  if (!text) return "";
+  const date =
+    ctx.date ??
+    new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
+  const map: Record<string, string> = {
+    SenderName:      ctx.senderName      ?? "",
+    SenderCompany:   ctx.senderCompany   ?? "",
+    SenderFax:       ctx.senderFax       ?? "",
+    SenderVoice:     ctx.senderVoice     ?? "",
+    ReceiverName:    ctx.receiverName    ?? "",
+    ReceiverCompany: ctx.receiverCompany ?? "",
+    Subject:         ctx.subject         ?? "",
+    Date:            date,
+    Comments:        ctx.comments        ?? "",
+    Cover:           ctx.comments        ?? "", // alias used by FaxBack docs
+  };
+  return text.replace(/\$\(([A-Za-z]+)\)/g, (m, key: string) =>
+    Object.prototype.hasOwnProperty.call(map, key) ? map[key] : m
+  );
+}
+
+function sectionHeader(label: string): string {
+  return `
+    <tr>
+      <td colspan="2" style="padding:8pt 0 4pt;font-family:Arial,sans-serif;font-size:10pt;font-weight:bold;text-transform:uppercase;letter-spacing:2px;color:#000;border-bottom:2px solid #000;">${label}</td>
+    </tr>`;
+}
+
 function row(label: string, value: string, large = false): string {
   if (!value.trim()) return "";
   return `
     <tr>
-      <td style="text-align:right;vertical-align:top;padding:3pt 14pt 3pt 0;font-size:8.5pt;font-weight:bold;color:#555;font-family:Arial,sans-serif;white-space:nowrap;width:1.3in;text-transform:uppercase;letter-spacing:0.5px;">${esc(label)}</td>
-      <td style="vertical-align:top;padding:3pt 0;font-size:${large ? "14pt" : "11pt"};font-weight:${large ? "bold" : "normal"};font-family:Arial,sans-serif;">${esc(value)}</td>
+      <td style="text-align:right;vertical-align:top;padding:3pt 14pt 3pt 0;font-size:8.5pt;font-weight:bold;color:#333;font-family:Arial,sans-serif;white-space:nowrap;width:1.3in;text-transform:uppercase;letter-spacing:0.5px;">${esc(label)}</td>
+      <td style="vertical-align:top;padding:3pt 0;font-size:${large ? "13pt" : "11pt"};font-weight:${large ? "bold" : "normal"};font-family:Arial,sans-serif;">${esc(value)}</td>
     </tr>`;
 }
 
@@ -43,6 +91,12 @@ export interface CoverHtmlOptions {
   message: string;
   /** Defaults to today in en-US long format */
   date?: string;
+  /** Optional logo/letterhead. Used by the in-browser PREVIEW only — FaxBack's
+   *  HTML renderer drops base64 data URIs, so this should never be passed for
+   *  the actual transmitted HTML cover. When a saved RTF template is selected,
+   *  the template's logo is rendered server-side by FaxBack from the RTF. */
+  headerImageBase64?: string;
+  headerImageType?: "png" | "jpeg";
 }
 
 export function generateCoverHtml(opts: CoverHtmlOptions): string {
@@ -54,21 +108,23 @@ export function generateCoverHtml(opts: CoverHtmlOptions): string {
       day: "numeric",
     });
 
-  const toBlock = [
-    row("TO", opts.receiverName, true),
-    row("COMPANY", opts.receiverCompany),
+  const toRows = [
+    row("Name", opts.receiverName, true),
+    row("Company", opts.receiverCompany),
   ].join("");
+  const toBlock = toRows ? sectionHeader("To") + toRows : "";
 
-  const fromBlock = [
-    row("FROM", opts.senderName, true),
-    row("COMPANY", opts.senderCompany),
-    row("FAX", opts.senderFax),
-    row("VOICE", opts.senderVoice),
+  const fromRows = [
+    row("Name", opts.senderName, true),
+    row("Company", opts.senderCompany),
+    row("Fax", opts.senderFax),
+    row("Voice", opts.senderVoice),
   ].join("");
+  const fromBlock = fromRows ? sectionHeader("From") + fromRows : "";
 
   const subjectLine = opts.subject.trim()
     ? `<p style="margin:0 0 12px;font-family:Arial,sans-serif;font-size:11pt;">` +
-      `<span style="font-size:9pt;font-weight:bold;text-transform:uppercase;letter-spacing:1px;color:#555;">Subject:&nbsp;</span>` +
+      `<span style="font-size:9pt;font-weight:bold;text-transform:uppercase;letter-spacing:1px;color:#333;">Subject:&nbsp;</span>` +
       `${esc(opts.subject)}</p>`
     : "";
 
@@ -86,8 +142,8 @@ export function generateCoverHtml(opts: CoverHtmlOptions): string {
   @page { size: letter; margin: 0; }
   html, body { width: 816px; }
   body {
-    margin: 0.85in 1in 1in 1in;
-    padding: 0;
+    margin: 0;
+    padding: 0.85in 1in 1in 1in;
     font-family: Arial, sans-serif;
     font-size: 11pt;
     color: #000;
@@ -109,6 +165,12 @@ export function generateCoverHtml(opts: CoverHtmlOptions): string {
 <\/script>
 </head>
 <body>
+
+  ${opts.headerImageBase64 && opts.headerImageType ? `
+  <!-- ===== LETTERHEAD / LOGO (preview only) ===== -->
+  <div style="text-align:center;margin-bottom:10pt;">
+    <img src="data:image/${opts.headerImageType};base64,${opts.headerImageBase64}" alt="" style="max-width:100%;max-height:1in;object-fit:contain;" />
+  </div>` : ""}
 
   <!-- ===== HEADER BANNER ===== -->
   <table style="width:100%;margin-bottom:4pt;">

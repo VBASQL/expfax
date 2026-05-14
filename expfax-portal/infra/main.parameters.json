@@ -4,6 +4,25 @@
   "parameters": {
     "baseName": { "value": "${AZURE_ENV_NAME}" },
     "location": { "value": "${AZURE_LOCATION}" },
-    "appServiceSku": { "value": "B1" }
+    "appServiceSku": { "value": "B1" },
+
+    "faxbackApiUrl":       { "value": "${FAXBACK_API_URL=}" },
+    "faxbackUsername":     { "value": "${FAXBACK_USERNAME=}" },
+    "faxbackPassword":     { "value": "${FAXBACK_PASSWORD=}" },
+    "faxbackEmailDomain":  { "value": "${FAXBACK_EMAIL_DOMAIN=}" },
+
+    "entraTenantId":       { "value": "${ENTRA_TENANT_ID=}" },
+    "entraClientId":       { "value": "${ENTRA_CLIENT_ID=}" },
+    "entraClientSecret":   { "value": "${ENTRA_CLIENT_SECRET=}" },
+
+    "externalTenantId":     { "value": "${EXTERNAL_TENANT_ID=}" },
+    "externalTenantDomain": { "value": "${EXTERNAL_TENANT_DOMAIN=}" },
+    "externalClientId":     { "value": "${EXTERNAL_CLIENT_ID=}" },
+    "externalClientSecret": { "value": "${EXTERNAL_CLIENT_SECRET=}" },
+
+    "commonClientId":      { "value": "${COMMON_CLIENT_ID=}" },
+    "commonClientSecret":  { "value": "${COMMON_CLIENT_SECRET=}" },
+
+    "sessionSecret":       { "value": "${SESSION_SECRET=}" }
   }
 }

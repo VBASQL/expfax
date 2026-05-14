@@ -3,6 +3,7 @@
 import { Card, CardContent } from "@/components/ui/card";
 import { Star, MoreVertical, Edit, Trash2, Phone } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { formatPhone } from "@/lib/phone";
 
 interface ContactCardProps {
   contact: {
@@ -52,7 +53,7 @@ export function ContactCard({ contact, onEdit, onDelete, onToggleFavorite }: Con
         </div>
         <p className="font-semibold text-sm mb-1">{contact.name}</p>
         <p className="text-xs text-slate-400 font-mono flex items-center gap-1">
-          <Phone className="h-3 w-3" /> {contact.faxNumber}
+          <Phone className="h-3 w-3" /> {formatPhone(contact.faxNumber)}
         </p>
         {contact.company && <p className="text-xs text-slate-500 mt-1">{contact.company}</p>}
       </CardContent>

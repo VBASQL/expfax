@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { normalizePhone, formatOnBlur } from "@/lib/phone";
 
 interface ContactFormData {
   name: string;
@@ -54,7 +55,13 @@ export function ContactDialog({ open, onClose, onSave, initialData, title }: Con
           </div>
           <div className="space-y-2">
             <Label>Fax Number *</Label>
-            <Input value={form.faxNumber} onChange={(e) => setForm({ ...form, faxNumber: e.target.value })} placeholder="(555) 123-4567" required />
+            <Input
+              value={form.faxNumber}
+              onChange={(e) => setForm({ ...form, faxNumber: normalizePhone(e.target.value) })}
+              onBlur={(e) => setForm({ ...form, faxNumber: formatOnBlur(e.target.value) })}
+              placeholder="(555) 123-4567"
+              required
+            />
           </div>
           <div className="space-y-2">
             <Label>Company</Label>

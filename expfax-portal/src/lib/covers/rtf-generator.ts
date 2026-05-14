@@ -27,7 +27,7 @@ function imageRtf(base64: string, imageType: "png" | "jpeg"): string {
   // picwgoal / pichgoal are in twips (1440 twips = 1 inch).
   // 7920 ≈ 5.5 in wide, 1440 ≈ 1 in tall — reasonable letterhead proportions.
   return (
-    `\\pard\\qc{\\pict${picType}\\picwgoal7920\\pichgoal1440\n${hex}}\\par\\par\n`
+    `\\pard\\qc{\\pict${picType}\\picwgoal7920\\pichgoal1440 ${hex}}\\par\\par\n`
   );
 }
 
@@ -118,9 +118,19 @@ export function generateTemplateRtf(opts: {
   headerImageBase64?: string;
   headerImageType?: "png" | "jpeg";
 }): string {
-  const body = opts.bodyText?.trim()
-    ? rtfEscape(opts.bodyText)
-    : "$(Comments)";
+  // $(Cover) is the FaxBack field substituted with the sender's per-fax message.
+  // It must always appear in the template. The user's bodyText is static preamble text
+  // that appears above it. If the user manually placed $(Cover) in their text, respect
+  // that position; otherwise auto-append it so the message always shows.
+  const staticText = opts.bodyText?.trim();
+  let body: string;
+  if (!staticText) {
+    body = "$(Cover)";
+  } else if (staticText.includes("$(Cover)")) {
+    body = rtfEscape(staticText); // user placed $(Cover) themselves — use as-is
+  } else {
+    body = rtfEscape(staticText) + "\\par\n$(Cover)"; // static preamble + message
+  }
 
   return coverLayout({
     date: "$(Date)",

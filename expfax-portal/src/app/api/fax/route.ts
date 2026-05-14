@@ -7,11 +7,18 @@ export async function GET(request: NextRequest) {
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const params = request.nextUrl.searchParams;
-  const direction = params.get("direction") || "received";
+  const directionParam = params.get("direction") || "";
+  // includeAll when: no direction given, direction is "all", or explicit includeAll=true with no specific direction
+  const includeAll = directionParam === "" || directionParam === "all";
+  const direction = includeAll ? "all" : directionParam;
   const page = parseInt(params.get("page") || "1", 10);
-  const pageSize = Math.min(parseInt(params.get("pageSize") || "20", 10), 100);
+  const pageSize = Math.min(parseInt(params.get("pageSize") || params.get("limit") || "20", 10), 100);
+  const dateFrom = params.get("dateFrom") || "";
+  const dateTo = params.get("dateTo") || "";
   const search = params.get("search") || "";
   const accountGuid = params.get("accountGuid") || ""; // optional: filter to a specific sent-from / received-to account
+  const did = params.get("did") || "";                  // optional: filter to a specific DID (own number)
+  const party = params.get("party") || "";              // optional: filter by counterparty number (sender for inbox, recipient for sent)
   const tagsParam = params.get("tags") || "";           // comma-separated label filter
   const filterTags = tagsParam ? tagsParam.split(",").map((t) => t.trim()).filter(Boolean) : [];
   const sortBy = params.get("sortBy") || "submitTime";   // submitTime | senderFaxNumber | receivedToFaxNumber
@@ -46,15 +53,21 @@ export async function GET(request: NextRequest) {
   // Using ARRAY_CONTAINS on the @accountGuids parameter handles all linked accounts in one query.
   const queryParams: Array<{ name: string; value: unknown }> = [
     { name: "@uid", value: user.id },
-    { name: "@dir", value: direction },
     { name: "@accountGuids", value: userAccountGuids },
   ];
+  if (!includeAll) {
+    queryParams.push({ name: "@dir", value: direction });
+  }
 
-  const accountVisibility = direction === "sent"
-    ? "ARRAY_CONTAINS(@accountGuids, c.sentFromAccountGuid)"
-    : "ARRAY_CONTAINS(@accountGuids, c.receivedToAccountGuid)";
+  const accountVisibility = includeAll
+    ? "(ARRAY_CONTAINS(@accountGuids, c.sentFromAccountGuid) OR ARRAY_CONTAINS(@accountGuids, c.receivedToAccountGuid))"
+    : direction === "sent"
+      ? "ARRAY_CONTAINS(@accountGuids, c.sentFromAccountGuid)"
+      : "ARRAY_CONTAINS(@accountGuids, c.receivedToAccountGuid)";
 
-  let whereClause = `WHERE c.direction = @dir AND c.isDeleted = false AND (c.userId = @uid OR ${accountVisibility})`;
+  let whereClause = includeAll
+    ? `WHERE c.isDeleted = false AND (c.userId = @uid OR ${accountVisibility})`
+    : `WHERE c.direction = @dir AND c.isDeleted = false AND (c.userId = @uid OR ${accountVisibility})`;
 
   if (search) {
     if (direction === "received") {
@@ -63,6 +76,17 @@ export async function GET(request: NextRequest) {
       whereClause += " AND (CONTAINS(c.senderFaxNumber, @search) OR CONTAINS(c.senderName, @search) OR CONTAINS(c.subject, @search))";
     }
     queryParams.push({ name: "@search", value: search });
+  }
+
+  // Date range filter
+  if (dateFrom) {
+    whereClause += " AND c.submitTime >= @dateFrom";
+    queryParams.push({ name: "@dateFrom", value: dateFrom });
+  }
+  if (dateTo) {
+    // dateTo is a date string (YYYY-MM-DD); include the full day by appending end-of-day
+    whereClause += " AND c.submitTime <= @dateTo";
+    queryParams.push({ name: "@dateTo", value: dateTo + "T23:59:59.999Z" });
   }
 
   // Tag filter — fax must have ANY of the selected tags (OR logic)
@@ -81,6 +105,46 @@ export async function GET(request: NextRequest) {
     const accountField = direction === "sent" ? "c.sentFromAccountGuid" : "c.receivedToAccountGuid";
     whereClause += ` AND ${accountField} = @accountGuid`;
     queryParams.push({ name: "@accountGuid", value: accountGuid });
+  }
+
+  // Optional filter to a specific own-DID (sender for sent, recipient for received)
+  if (did) {
+    if (direction === "sent") {
+      whereClause += ` AND c.senderFaxNumber = @did`;
+    } else {
+      whereClause += ` AND c.receivedToFaxNumber = @did`;
+    }
+    queryParams.push({ name: "@did", value: did });
+  }
+
+  // Optional filter by counterparty number(s).
+  // `party` may be comma-separated for the multiselect dropdown (exact match,
+  // OR semantics). A single non-numeric value still matches as a substring so
+  // legacy callers keep working.
+  if (party) {
+    const parties = party.split(",").map((p) => p.trim()).filter(Boolean);
+    if (parties.length > 1 || /^[+\d, ]+$/.test(party)) {
+      // Exact-match list (typical case from the dropdown)
+      const conds: string[] = [];
+      parties.forEach((p, i) => {
+        const pname = `@party${i}`;
+        if (direction === "sent") {
+          conds.push(`EXISTS(SELECT VALUE r FROM r IN c.recipients WHERE r.faxNumber = ${pname})`);
+        } else {
+          conds.push(`c.senderFaxNumber = ${pname}`);
+        }
+        queryParams.push({ name: pname, value: p });
+      });
+      whereClause += ` AND (${conds.join(" OR ")})`;
+    } else {
+      // Single free-form value → substring match (back-compat)
+      if (direction === "sent") {
+        whereClause += ` AND EXISTS(SELECT VALUE r FROM r IN c.recipients WHERE CONTAINS(r.faxNumber, @party))`;
+      } else {
+        whereClause += ` AND CONTAINS(c.senderFaxNumber, @party)`;
+      }
+      queryParams.push({ name: "@party", value: party });
+    }
   }
 
   // Count
